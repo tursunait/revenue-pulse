@@ -235,3 +235,4 @@ data/
 dbt/target/
 dbt/logs/
 dbt/dbt_packages/
+CLAUDE.md
