@@ -230,3 +230,8 @@ __marimo__/
 
 # Generated synthetic data (rebuild with generator/generate.py)
 data/
+
+# dbt
+dbt/target/
+dbt/logs/
+dbt/dbt_packages/

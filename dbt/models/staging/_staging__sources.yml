@@ -1,0 +1,35 @@
+version: 2
+
+sources:
+  - name: raw
+    database: REVENUE_PULSE
+    schema: RAW
+    description: >
+      Synthetic source data loaded by generator/load.py. Date columns arrive as
+      TIMESTAMP_NTZ because write_pandas infers them that way; staging casts
+      them to DATE.
+    tables:
+      - name: USAGE_EVENTS
+        description: One row per account x day x product, plus planted anomalies.
+        config:
+          loaded_at_field: LOADED_AT
+          freshness:
+            warn_after: {count: 36, period: hour}
+            error_after: {count: 72, period: hour}
+        columns:
+          - name: EVENT_ID
+            description: Surrogate key. Re-issued on every generator run.
+
+      - name: ACCOUNTS
+        description: Account dimension, ~200 rows.
+
+      - name: LEDGER_REVENUE
+        description: >
+          Finance's booked revenue per account-day. Generated from CLEAN usage
+          revenue, before usage anomalies are injected, so it is an independent
+          record rather than a copy of the pipeline. See DECISIONS.md part 1.
+
+      - name: ANOMALY_LABELS
+        description: >
+          Ground truth for the planted anomalies. The detector must never read
+          this table; only eval/ may.

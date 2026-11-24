@@ -1,0 +1,35 @@
+name: revenue_pulse
+version: "1.0.0"
+config-version: 2
+
+profile: revenue_pulse
+
+model-paths: ["models"]
+macro-paths: ["macros"]
+test-paths: ["tests"]
+target-path: "target"
+clean-targets: ["target", "dbt_packages"]
+
+vars:
+  # A row is late when it landed more than this many hours after the usage date
+  # began. Normal pipeline latency is ~26h (early the next morning), so 48h
+  # leaves clear headroom before anything is called late.
+  late_after_hours: 48
+
+  # Ledger reconciliation thresholds. A break must clear BOTH gates - see
+  # DECISIONS.md section 2. booked_revenue is rounded to cents, so on a small
+  # account-day a half-cent of rounding is up to 0.43% in relative terms.
+  recon_rel_pct: 0.5
+  recon_abs_usd: 0.01
+
+models:
+  revenue_pulse:
+    staging:
+      +schema: STAGING
+      +materialized: view
+    marts:
+      +schema: MARTS
+      +materialized: table
+    dq:
+      +schema: DQ
+      +materialized: table

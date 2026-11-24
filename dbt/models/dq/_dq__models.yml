@@ -1,0 +1,40 @@
+version: 2
+
+models:
+  - name: dq_reconciliation
+    description: >
+      Exceptions table: account-days where usage revenue and ledger revenue
+      differ by more than BOTH var('recon_rel_pct') and var('recon_abs_usd').
+      Zero rows is healthy.
+    columns:
+      - name: account_id
+        data_tests: [not_null]
+      - name: activity_date
+        data_tests: [not_null]
+      - name: break_kind
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [amount_mismatch, usage_missing, ledger_missing]
+
+  - name: dq_duplicates
+    description: >
+      Duplicate rows in RAW.USAGE_EVENTS, measured before staging dedupes.
+      Zero rows is healthy.
+    columns:
+      - name: duplicate_kind
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [event_id, business_grain]
+
+  - name: dq_late_arrivals
+    description: >
+      Account-days that landed more than var('late_after_hours') late. Values
+      are correct; this is a freshness fault. Zero rows is healthy.
+    columns:
+      - name: account_id
+        data_tests: [not_null]
+      - name: lag_days
+        data_tests: [not_null]

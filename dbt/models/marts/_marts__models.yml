@@ -1,0 +1,48 @@
+version: 2
+
+models:
+  - name: fct_daily_revenue
+    description: Revenue at account x day x product, with account attributes.
+    columns:
+      - name: daily_revenue_key
+        description: md5 of account_id, usage_date, product - one row per grain.
+        data_tests:
+          - unique
+          - not_null
+      - name: account_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_accounts')
+                field: account_id
+      - name: usage_date
+        data_tests: [not_null]
+      - name: product
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [compute, storage, ai_services, serverless]
+      - name: segment
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [Enterprise, Commercial, SMB]
+      - name: revenue
+        data_tests: [not_null]
+
+  - name: fct_weekly_review
+    description: >
+      Weekly revenue by segment and product, with week-over-week change and
+      comparison against the trailing four weeks (current week excluded).
+    columns:
+      - name: weekly_review_key
+        data_tests:
+          - unique
+          - not_null
+      - name: week_start
+        data_tests: [not_null]
+      - name: revenue
+        data_tests: [not_null]
+      - name: active_accounts
+        data_tests: [not_null]

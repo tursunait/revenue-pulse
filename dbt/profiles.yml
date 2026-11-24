@@ -1,0 +1,19 @@
+# Credentials come from .env via the environment - nothing secret lives here.
+# Run dbt through scripts/dbt.sh, which loads .env before invoking it.
+revenue_pulse:
+  target: dev
+  outputs:
+    dev:
+      type: snowflake
+      account: "{{ env_var('SNOWFLAKE_ACCOUNT') }}"
+      user: "{{ env_var('SNOWFLAKE_USER') }}"
+      # Python does not expand ~, so do it here for keys stored under $HOME.
+      private_key_path: "{{ env_var('SNOWFLAKE_PRIVATE_KEY_PATH') | replace('~', env_var('HOME')) }}"
+      # Empty when the key is unencrypted; dbt treats "" as no passphrase.
+      private_key_passphrase: "{{ env_var('SNOWFLAKE_PRIVATE_KEY_PASSPHRASE', '') }}"
+      role: "{{ env_var('SNOWFLAKE_ROLE') }}"
+      warehouse: "{{ env_var('SNOWFLAKE_WAREHOUSE') }}"
+      database: "{{ env_var('SNOWFLAKE_DATABASE') }}"
+      # Default schema. Marts and DQ models override it per directory.
+      schema: STAGING
+      threads: 4

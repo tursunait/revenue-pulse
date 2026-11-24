@@ -123,3 +123,82 @@ gap was obvious once the two numbers sat side by side.
 `RAW.ANOMALY_LABELS` — only `eval/` may. That separation is what makes the
 evaluation honest, and it's also why the labels carry the whole burden of being
 correct. Nothing downstream can catch their mistakes.
+
+---
+
+## 4. Duplicate detection needs two layers, not one
+
+**The call.** `stg_usage_events` dedupes on `event_id`, keeping the earliest
+`loaded_at`. That alone would have looked like duplicate handling was done. It
+isn't, and `dq_duplicates` reports two separate faults:
+
+| Fault | What happened | Caught by |
+| --- | --- | --- |
+| `event_id` | the same surrogate key arrived twice — a true replay | staging dedupe silently fixes it |
+| `business_grain` | one account-day-product has two rows with *different* `event_id`s | nothing in staging; reaches the marts |
+
+**Why it matters.** A loader re-run that re-keys its output produces rows that
+are *distinct events* by primary key and *duplicate facts* by business meaning.
+Deduping on `event_id` cannot see them — and a `unique` test on `event_id`
+passes, which is the dangerous part: the green test implies a guarantee it does
+not provide.
+
+So `dq_duplicates` reads `RAW.USAGE_EVENTS` directly, before staging dedupes.
+Pointing it at the staging model would have measured the dedupe rather than the
+data.
+
+**Evidence.** All four planted `duplicate_load` anomalies show up as 16
+`business_grain` rows (4 account-days x 4 products) and zero `event_id` rows —
+confirming the generator re-keys on reload, and that the `unique` test on
+`event_id` genuinely cannot catch this class.
+
+---
+
+## 5. DQ tests warn; invariant tests error
+
+**The call.** Tests split by what a failure *means*:
+
+- **`error`** — invariants that are bugs if violated: key uniqueness, not-null,
+  accepted values, referential integrity, `assert_no_negative_revenue`,
+  `assert_weekly_total_matches_daily`.
+- **`warn`** — the three DQ exception tests. This dataset has 25 planted
+  anomalies, so these are *supposed* to fire.
+
+**Why.** `dbt build` has to stay a meaningful gate. If known anomalies turned
+the whole run red, the only options would be ignoring a permanently-failing
+build or deleting the anomalies — and then the DQ layer would be exercising
+nothing. Splitting by severity means `ERROR=0` still means "the pipeline is
+sound" while `WARN=3` means "the data has problems, as designed."
+
+On production data the three DQ tests would be `severity='error'`.
+
+**Evidence.** `PASS=53 WARN=3 ERROR=0`, and `eval/triage_dq.py` maps all 43
+exception rows to planted anomalies with **zero unexplained rows** and 25/25
+anomalies caught.
+
+### Known gap: source freshness passes for the wrong reason
+
+`dbt source freshness` passes on `RAW.USAGE_EVENTS` — but only because the
+generator stamps `loaded_at` as `usage_date + 1 day`, so the newest row is
+dated *three hours in the future*. The computed age is **-3 hours**, which
+clears any threshold.
+
+The test is therefore inert: it would pass even against a stalled pipeline. A
+real fix is to stop generating usage for the current day, or clamp `loaded_at`
+to no later than now, so that age reflects something. Worth knowing before
+quoting freshness coverage as a feature.
+
+### Note on reconciliation sign convention
+
+`dq_reconciliation.rel_diff_pct` is `(usage - ledger) / ledger`, while
+`ANOMALY_LABELS.magnitude` for a `ledger_mismatch` is the perturbation applied
+*to the ledger*. The same event therefore reads `+4.50%` in the label and
+`-4.31%` in the DQ model — same fault, different denominator. `eval/` should
+match on label identity, never by comparing these two numbers.
+
+---
+
+## Environment notes
+
+RP_MONITOR is attached to RP_WH (checked as ACCOUNTADMIN). RP_ROLE can't see
+it, so it shows as null from scripts.

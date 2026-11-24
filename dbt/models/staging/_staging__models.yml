@@ -1,0 +1,79 @@
+version: 2
+
+models:
+  - name: stg_usage_events
+    description: >
+      Typed usage events, deduped on event_id (earliest loaded_at wins).
+      Adds revenue and an is_late flag.
+    columns:
+      - name: event_id
+        description: Unique after dedupe.
+        data_tests:
+          - unique
+          - not_null
+      - name: account_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_accounts')
+                field: account_id
+      - name: usage_date
+        data_tests: [not_null]
+      - name: product
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [compute, storage, ai_services, serverless]
+      - name: credits
+        data_tests: [not_null]
+      - name: revenue
+        data_tests: [not_null]
+      - name: is_late
+        data_tests: [not_null]
+
+  - name: stg_accounts
+    description: Account dimension with lifecycle dates cast to DATE.
+    columns:
+      - name: account_id
+        data_tests:
+          - unique
+          - not_null
+      - name: segment
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [Enterprise, Commercial, SMB]
+      - name: region
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [NA, EMEA, APAC, LATAM]
+      - name: contract_type
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [annual_commit, monthly, on_demand]
+      - name: start_date
+        data_tests: [not_null]
+
+  - name: stg_ledger_revenue
+    description: Finance's booked revenue per account-day.
+    columns:
+      - name: ledger_id
+        data_tests:
+          - unique
+          - not_null
+      - name: account_id
+        data_tests:
+          - not_null
+          - relationships:
+              arguments:
+                to: ref('stg_accounts')
+                field: account_id
+      - name: revenue_date
+        data_tests: [not_null]
+      - name: booked_revenue
+        data_tests: [not_null]
