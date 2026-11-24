@@ -221,3 +221,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Revenue Pulse: Snowflake key-pair material. Never commit.
+*.p8
+*.pem
+*.pub
+*.key
