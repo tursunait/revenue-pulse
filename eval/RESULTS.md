@@ -25,14 +25,14 @@ A correctly normalised z-score has mean 0, sd 1, and half its values positive.
 
 | Version | Threshold | Flags | Flag rate | Up | Down |
 | --- | --- | --- | --- | --- | --- |
-| v1 | 3 | 20,521 | 9.450% | 17,318 | 3,203 |
-| v1 | 3.5 | 14,519 | 6.686% | 12,539 | 1,980 |
-| v1 | 4 | 10,428 | 4.802% | 9,158 | 1,270 |
-| v1 | 5 | 5,634 | 2.595% | 5,123 | 511 |
-| v2 | 3 | 898 | 0.464% | 513 | 385 |
-| v2 | 3.5 | 255 | 0.132% | 146 | 109 |
-| v2 | 4 | 83 | 0.043% | 46 | 37 |
-| v2 | 5 | 31 | 0.016% | 12 | 19 |
+| v1 | 3 | 20,521 | 9.450% (20,521/217,148) | 17,318 | 3,203 |
+| v1 | 3.5 | 14,519 | 6.686% (14,519/217,148) | 12,539 | 1,980 |
+| v1 | 4 | 10,428 | 4.802% (10,428/217,148) | 9,158 | 1,270 |
+| v1 | 5 | 5,634 | 2.595% (5,634/217,148) | 5,123 | 511 |
+| v2 | 3 | 898 | 0.464% (898/193,584) | 513 | 385 |
+| v2 | 3.5 | 255 | 0.132% (255/193,584) | 146 | 109 |
+| v2 | 4 | 83 | 0.043% (83/193,584) | 46 | 37 |
+| v2 | 5 | 31 | 0.016% (31/193,584) | 12 | 19 |
 
 ## Threshold sweep with chance baseline
 
@@ -40,27 +40,27 @@ A correctly normalised z-score has mean 0, sd 1, and half its values positive.
 
 | Version | Threshold | Detections | TP | FP | Precision | Recall | F1 | caught | chance | real |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| v1 | 3 | 14,779 | 41 | 14,738 | 0.0028 | 0.586 | 0.0055 | 25/29 | 8.3 | +16.7 |
-| v1 | 3.5 | 10,787 | 37 | 10,750 | 0.0034 | 0.529 | 0.0068 | 23/29 | 6.6 | +16.4 |
-| v1 | 4 | 7,865 | 32 | 7,833 | 0.0041 | 0.457 | 0.0081 | 22/29 | 5.4 | +16.6 |
-| v1 | 5 | 4,324 | 26 | 4,298 | 0.0060 | 0.371 | 0.0118 | 21/29 | 3.7 | +17.3 |
-| v2 | 3 | 874 | 19 | 855 | 0.0217 | 0.271 | 0.0403 | 18/29 | 1.0 | +17.0 |
-| v2 | 3.5 | 242 | 17 | 225 | 0.0702 | 0.243 | 0.1090 | 16/29 | 0.3 | +15.7 |
-| v2 | 4 | 71 | 14 | 57 | 0.1972 | 0.200 | 0.1986 | 13/29 | 0.1 | +12.9 |
-| v2 | 5 | 19 | 13 | 6 | 0.6842 | 0.186 | 0.2921 | 12/29 | 0.0 | +12.0 |
+| v1 | 3 | 14,779 | 41 | 14,738 | 0.003 (41/14779) | 0.586 (41/70) | 0.0055 | 25/29 | 8.3 | +16.7 |
+| v1 | 3.5 | 10,787 | 37 | 10,750 | 0.003 (37/10787) | 0.529 (37/70) | 0.0068 | 23/29 | 6.6 | +16.4 |
+| v1 | 4 | 7,865 | 32 | 7,833 | 0.004 (32/7865) | 0.457 (32/70) | 0.0081 | 22/29 | 5.4 | +16.6 |
+| v1 | 5 | 4,324 | 26 | 4,298 | 0.006 (26/4324) | 0.371 (26/70) | 0.0118 | 21/29 | 3.7 | +17.3 |
+| v2 | 3 | 874 | 19 | 855 | 0.022 (19/874) | 0.271 (19/70) | 0.0403 | 18/29 | 1.0 | +17.0 |
+| v2 | 3.5 | 242 | 17 | 225 | 0.070 (17/242) | 0.243 (17/70) | 0.1090 | 16/29 | 0.3 | +15.7 |
+| v2 | 4 | 71 | 14 | 57 | 0.197 (14/71) | 0.200 (14/70) | 0.1986 | 13/29 | 0.1 | +12.9 |
+| v2 | 5 | 19 | 13 | 6 | 0.684 (13/19) | 0.186 (13/70) | 0.2921 | 12/29 | 0.0 | +12.0 |
 
 ## Scenario A — full data (ledger available)
 
 | Detector | TP | FP | FN | Precision | Recall | F1 |
 | --- | --- | --- | --- | --- | --- | --- |
-| reconciliation | 63 | 0 | 7 | 1.000 | 0.900 | 0.947 |
-| duplicates | 4 | 0 | 66 | 1.000 | 0.057 | 0.108 |
-| late arrivals | 5 | 0 | 65 | 1.000 | 0.071 | 0.133 |
-| gap rule (zero-after-nonzero) | 4 | 0 | 66 | 1.000 | 0.057 | 0.108 |
-| z-score v2 (|z|>4) | 14 | 57 | 56 | 0.197 | 0.200 | 0.199 |
-| z-score v1 (|z|>4) | 32 | 7,833 | 38 | 0.004 | 0.457 | 0.008 |
-| DETERMINISTIC only | 68 | 0 | 2 | 1.000 | 0.971 | 0.986 |
-| COMBINED (deterministic + v2) | 68 | 57 | 2 | 0.544 | 0.971 | 0.697 |
+| reconciliation | 63 | 0 | 7 | 1.000 (63/63) | 0.900 (63/70) | 0.947 |
+| duplicates | 4 | 0 | 66 | 1.000 (4/4) | 0.057 (4/70) | 0.108 |
+| late arrivals | 5 | 0 | 65 | 1.000 (5/5) | 0.071 (5/70) | 0.133 |
+| gap rule (zero-after-nonzero) | 4 | 0 | 66 | 1.000 (4/4) | 0.057 (4/70) | 0.108 |
+| z-score v2 (|z|>4) | 14 | 57 | 56 | 0.197 (14/71) | 0.200 (14/70) | 0.199 |
+| z-score v1 (|z|>4) | 32 | 7,833 | 38 | 0.004 (32/7865) | 0.457 (32/70) | 0.008 |
+| DETERMINISTIC only | 68 | 0 | 2 | 1.000 (68/68) | 0.971 (68/70) | 0.986 |
+| COMBINED (deterministic + v2) | 68 | 57 | 2 | 0.544 (68/125) | 0.971 (68/70) | 0.697 |
 
 ### Recall by anomaly type — scenario A
 
@@ -80,13 +80,13 @@ A correctly normalised z-score has mean 0, sd 1, and half its values positive.
 
 | Detector | TP | FP | FN | Precision | Recall | F1 |
 | --- | --- | --- | --- | --- | --- | --- |
-| duplicates | 4 | 0 | 66 | 1.000 | 0.057 | 0.108 |
-| late arrivals | 5 | 0 | 65 | 1.000 | 0.071 | 0.133 |
-| gap rule (zero-after-nonzero) | 4 | 0 | 66 | 1.000 | 0.057 | 0.108 |
-| z-score v2 (|z|>4) | 14 | 57 | 56 | 0.197 | 0.200 | 0.199 |
-| z-score v1 (|z|>4) | 32 | 7,833 | 38 | 0.004 | 0.457 | 0.008 |
-| WITHOUT z-score (dupes+late+gap) | 13 | 0 | 57 | 1.000 | 0.186 | 0.313 |
-| COMBINED (v2 + dupes + late + gap) | 22 | 57 | 48 | 0.278 | 0.314 | 0.295 |
+| duplicates | 4 | 0 | 66 | 1.000 (4/4) | 0.057 (4/70) | 0.108 |
+| late arrivals | 5 | 0 | 65 | 1.000 (5/5) | 0.071 (5/70) | 0.133 |
+| gap rule (zero-after-nonzero) | 4 | 0 | 66 | 1.000 (4/4) | 0.057 (4/70) | 0.108 |
+| z-score v2 (|z|>4) | 14 | 57 | 56 | 0.197 (14/71) | 0.200 (14/70) | 0.199 |
+| z-score v1 (|z|>4) | 32 | 7,833 | 38 | 0.004 (32/7865) | 0.457 (32/70) | 0.008 |
+| WITHOUT z-score (dupes+late+gap) | 13 | 0 | 57 | 1.000 (13/13) | 0.186 (13/70) | 0.313 |
+| COMBINED (v2 + dupes + late + gap) | 22 | 57 | 48 | 0.278 (22/79) | 0.314 (22/70) | 0.295 |
 
 ### Recall by anomaly type — scenario B
 
@@ -108,10 +108,10 @@ In scenario B the threshold is load-bearing: nothing else covers the fault types
 
 | Threshold | Precision | Recall | F1 | labels caught | detections | items/day |
 | --- | --- | --- | --- | --- | --- | --- |
-| 3 | 0.027 | 0.343 | 0.051 | 23/29 | 879 | 2.9 |
-| 3.5 | 0.089 | 0.314 | 0.139 | 21/29 | 247 | 0.8 |
-| 4 | 0.278 | 0.314 | 0.295 | 21/29 | 79 | 0.3 |
-| 5 | 0.786 | 0.314 | 0.449 | 21/29 | 28 | 0.1 |
+| 3 | 0.027 (24/879) | 0.343 (24/70) | 0.051 | 23/29 | 879 | 2.9 |
+| 3.5 | 0.089 (22/247) | 0.314 (22/70) | 0.139 | 21/29 | 247 | 0.8 |
+| 4 | 0.278 (22/79) | 0.314 (22/70) | 0.295 | 21/29 | 79 | 0.3 |
+| 5 | 0.786 (22/28) | 0.314 (22/70) | 0.449 | 21/29 | 28 | 0.1 |
 
 ## v2 recall by type across thresholds
 
@@ -172,9 +172,10 @@ same-weekday points.
 
 ## Scenario A: with a daily ledger, the z-score is still redundant
 
-Reconciliation alone scores precision 1.000, recall
-0.900, F1 0.947. The deterministic set reaches F1
-0.986; adding v2 moves it to 0.697.
+Reconciliation alone scores precision 1.000 (63/63), recall 0.900 (63/70), F1
+0.947. The deterministic set reaches F1 0.986 (recall
+0.971 (68/70)); adding v2 moves it to 0.697 and drops precision to
+0.544 (68/125).
 
 This was already v1's conclusion and v2 does not change it. When an independent
 ledger exists, subtraction beats statistics: the ledger witnesses every
@@ -190,8 +191,8 @@ booked-revenue feed to reconcile against.
 
 | | Precision | Recall | F1 | Labels caught |
 | --- | --- | --- | --- | --- |
-| Without the z-score | 1.000 | 0.186 | 0.313 | 12/29 |
-| v2 added (\|z\|>4) | 0.278 | 0.314 | 0.295 | 21/29 |
+| Without the z-score | 1.000 (13/13) | 0.186 (13/70) | 0.313 | 12/29 |
+| v2 added (\|z\|>4) | 0.278 (22/79) | 0.314 (22/70) | 0.295 | 21/29 |
 
 Without the z-score the surviving checks cover only the three fault types they
 were written for — `duplicate_load`, `late_arrival`, `pipeline_gap`. Adding v2
@@ -219,16 +220,16 @@ Scenario B across thresholds:
 
 | Threshold | Precision | Recall | F1 | Labels | Items/day |
 | --- | --- | --- | --- | --- | --- |
-| 3 | 0.027 | 0.343 | 0.051 | 23/29 | 2.9 |
-| 3.5 | 0.089 | 0.314 | 0.139 | 21/29 | 0.8 |
-| 4 | 0.278 | 0.314 | 0.295 | 21/29 | 0.3 |
-| 5 | 0.786 | 0.314 | 0.449 | 21/29 | 0.1 |
+| 3 | 0.027 (24/879) | 0.343 (24/70) | 0.051 | 23/29 | 2.9 |
+| 3.5 | 0.089 (22/247) | 0.314 (22/70) | 0.139 | 21/29 | 0.8 |
+| 4 | 0.278 (22/79) | 0.314 (22/70) | 0.295 | 21/29 | 0.3 |
+| 5 | 0.786 (22/28) | 0.314 (22/70) | 0.449 | 21/29 | 0.1 |
 
 The curve is steep and the coverage is almost flat. Going from \|z\|>5 to
 \|z\|>3 buys 2 extra label(s) — both
 `mild_spike` — and costs 31x
-the review volume, dropping precision from 0.786
-to 0.027. The z-score's coverage of
+the review volume, dropping precision from 0.786 (22/28)
+to 0.027 (24/879). The z-score's coverage of
 `duplicate_load` at low thresholds is redundant: `dq_duplicates` already
 catches all of them exactly.
 
@@ -240,21 +241,21 @@ That asymmetry is the whole recommendation. **Two tiers, not one threshold.**
 
 | Check | Precision | Why it can page |
 | --- | --- | --- |
-| `dq_reconciliation` (scenario A only) | 1.000 | money that does not tie out against an independent source |
-| `dq_duplicates` (business grain) | 1.000 | a duplicated load is unambiguous and mechanically fixable |
-| `dq_late_arrivals` | 1.000 | a stalled feed needs an owner now |
-| gap rule, zero-after-nonzero | 1.000 | an account billing nothing when it should is an outage |
+| `dq_reconciliation` (scenario A only) | 1.000 (63/63) | money that does not tie out against an independent source |
+| `dq_duplicates` (business grain) | 1.000 (4/4) | a duplicated load is unambiguous and mechanically fixable |
+| `dq_late_arrivals` | 1.000 (5/5) | a stalled feed needs an owner now |
+| gap rule, zero-after-nonzero | 1.000 (4/4) | an account billing nothing when it should is an outage |
 | source freshness error (72h) | — | the pipeline has stopped |
-| **v2 at \|z\|>5, scenario B only** | 0.786 | 1.0 items per label-period; precise enough to wake someone *when there is no ledger* |
+| **v2 at \|z\|>5, scenario B only** | 0.786 (22/28) | 1.0 items per label-period; precise enough to wake someone *when there is no ledger* |
 
 **Shows on a dashboard or review queue** — needs human judgement:
 
 | Signal | Precision | Why it must not page |
 | --- | --- | --- |
-| v2 at \|z\|>3, daily triage queue | 0.027 | 2.9 items/day is reviewable, but most are not incidents |
+| v2 at \|z\|>3, daily triage queue | 0.027 (24/879) | 2.9 items/day is reviewable, but most are not incidents |
 | `fct_weekly_review.vs_trailing_4w_pct` | — | the only signal that sees gradual drift; inherently weekly |
 | source freshness warning (36h) | — | expected on a static snapshot (see DECISIONS.md) |
-| v2 in scenario A, any threshold | 0.197 | reconciliation already catches everything it does, with perfect precision |
+| v2 in scenario A, any threshold | 0.197 (14/71) | reconciliation already catches everything it does, with perfect precision |
 
 So: in scenario A the z-score is decoration — keep it on the dashboard as a
 cross-check and let reconciliation page. In scenario B promote
@@ -264,3 +265,39 @@ cross-check and let reconciliation page. In scenario B promote
 The ordering principle: **page on checks that compare two independent sources,
 review everything that compares a series against its own history.** The first
 kind knows it is wrong; the second only knows it is unusual.
+
+## Future work: a cohort baseline for accounts under 13 weeks old
+
+v2's spread estimate needs 13 weeks of residual history, so a young
+account is not scored at all rather than scored badly. The cost is measurable:
+**5,891 account-days** that v1 could score are outside v2's
+support (54,287 down to 48,396), and
+**4 of 33 labels** fall in that
+blind spot (ANOM001, ANOM005, ANOM023, ANOM031).
+
+This is the wrong trade for the riskiest accounts. A newly onboarded account is
+precisely where a misconfigured meter, a wrong price or a unit error is most
+likely, and it is exactly the window where v2 stays silent. "No history" is
+being treated as "no opinion", when the cohort already supplies one.
+
+The fix is to borrow, not to wait. `dq_anomaly_scores_v2` already computes a
+`pooled_sigma` per product x segment and uses it as a lower bound; the same
+cohort can supply the whole estimate when an account has too little history:
+
+1. **Spread** — use the cohort `pooled_sigma` directly instead of requiring
+   `min_spread_points`, with a widening factor while history is thin (for
+   example scaling by `sqrt(expected_points / actual_points)`) so early scores
+   are deliberately conservative rather than confidently wrong.
+2. **Expectation** — replace the same-weekday median with the cohort's weekday
+   *shape* (its median log-deviation per weekday) applied to the account's own
+   level from whatever days exist. The account supplies the level, the cohort
+   supplies the seasonality it has not yet demonstrated.
+3. **Blend out** — weight cohort against account estimates by observed points,
+   so a maturing account slides from fully pooled to fully self-estimated
+   instead of switching discontinuously at week 13.
+
+Worth stating plainly: this would widen bands, not narrow them, so it buys
+coverage at some cost in sensitivity on young accounts. The alternative — the
+current behaviour — is no coverage at all, which is strictly worse. It would
+also need its own evaluation, since none of the above is exercised by the
+labels that currently fall inside v2's support.

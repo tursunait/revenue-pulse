@@ -39,6 +39,9 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 from pathlib import Path
 
+import pandas as pd
+from snowflake.connector.pandas_tools import write_pandas
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT))
 
@@ -77,6 +80,20 @@ class Score:
     def f1(self) -> float:
         p, r = self.precision, self.recall
         return 2 * p * r / (p + r) if (p + r) else 0.0
+
+
+def pf(sc: "Score") -> str:
+    """Precision with the counts it came from: 0.786 (11/14)."""
+    return f"{sc.precision:.3f} ({sc.tp}/{sc.tp + sc.fp})"
+
+
+def rf(sc: "Score") -> str:
+    """Recall with the counts it came from: 0.314 (22/70)."""
+    return f"{sc.recall:.3f} ({sc.tp}/{sc.tp + sc.fn})"
+
+
+def ff(sc: "Score") -> str:
+    return f"{sc.f1:.3f}"
 
 
 def score(detected: set, labelled: set) -> Score:
@@ -217,6 +234,21 @@ def main() -> int:
         L: list[str] = []
         emit = L.append
 
+        v1_support = {
+            (a, d) for a, d in fetch(cur, """
+                SELECT DISTINCT ACCOUNT_ID, USAGE_DATE
+                FROM REVENUE_PULSE.DQ.DQ_ANOMALY_SCORES WHERE Z IS NOT NULL
+            """)
+        }
+        coverage = {
+            "labels_total": len(labels),
+            "labels_eval": len(labels_eval),
+            "dropped": sorted(dropped),
+            "support_v2": len(support),
+            "support_v1": len(v1_support),
+            "lost_days": len(v1_support - support),
+        }
+
         emit("## Coverage and scoring basis\n")
         emit(f"- Planted anomalies: **{len(labels)}**, covering {len(labelled):,} account-days.")
         emit(f"- Scored on detector v2's support ({len(support):,} account-days): "
@@ -244,7 +276,8 @@ def main() -> int:
         for v in ("v1", "v2"):
             for t in Z_THRESHOLDS:
                 b = stats[v]["by_threshold"][t]
-                emit(f"| {v} | {t:g} | {b['total']:,} | {b['rate'] * 100:.3f}% | "
+                emit(f"| {v} | {t:g} | {b['total']:,} | "
+                     f"{b['rate'] * 100:.3f}% ({b['total']:,}/{stats[v]['scored']:,}) | "
                      f"{b['up']:,} | {b['down']:,} |")
         emit("")
 
@@ -264,7 +297,7 @@ def main() -> int:
                 caught = sum(1 for i in labels_eval if label_days[i] & det)
                 exp = chance(stats[v]["by_threshold"][t]["rate"], labels_eval)
                 emit(f"| {v} | {t:g} | {len(det):,} | {sc.tp} | {sc.fp:,} | "
-                     f"{sc.precision:.4f} | {sc.recall:.3f} | {sc.f1:.4f} | "
+                     f"{pf(sc)} | {rf(sc)} | {sc.f1:.4f} | "
                      f"{caught}/{len(labels_eval)} | {exp:.1f} | {caught - exp:+.1f} |")
         emit("")
 
@@ -297,6 +330,49 @@ def main() -> int:
 
         scenario_scores: dict[str, dict[str, Score]] = {}
         scenario_types: dict[str, dict[str, dict]] = {}
+        scorecard: list[dict] = []
+
+        def record(detector: str, scenario: str, threshold, detected: set) -> None:
+            """Add one '(all)' row plus a per-type row for this detector.
+
+            Per-type rows leave FP and PRECISION null on purpose: a false
+            positive belongs to no anomaly type, so a per-type precision would
+            have to invent a denominator. Recall and the chance baseline are
+            well defined per type, so those are populated.
+            """
+            sc = score(detected, labelled_eval)
+            scorecard.append({
+                "DETECTOR": detector, "SCENARIO": scenario, "THRESHOLD": threshold,
+                "ANOMALY_TYPE": "(all)", "TP": sc.tp, "FP": sc.fp, "FN": sc.fn,
+                "PRECISION": round(sc.precision, 6), "RECALL": round(sc.recall, 6),
+                "F1": round(sc.f1, 6),
+                "CHANCE_EXPECTED": round(chance(rate_for(detector, threshold), labels_eval), 4),
+            })
+            for kind in types:
+                ids = [i for i in labels_eval if label_type[i] == kind]
+                kind_days = set().union(*(label_days[i] & support for i in ids)) if ids else set()
+                tp = len(detected & kind_days)
+                scorecard.append({
+                    "DETECTOR": detector, "SCENARIO": scenario, "THRESHOLD": threshold,
+                    "ANOMALY_TYPE": kind, "TP": tp, "FP": None,
+                    "FN": len(kind_days) - tp,
+                    "PRECISION": None,
+                    "RECALL": round(tp / len(kind_days), 6) if kind_days else None,
+                    "F1": None,
+                    "CHANCE_EXPECTED": round(chance(rate_for(detector, threshold), ids), 4),
+                })
+
+        def rate_for(detector: str, threshold) -> float:
+            """Flag rate used for the chance baseline.
+
+            Only the z-score detectors have a population flag rate; for the
+            deterministic checks the chance baseline is not meaningful, so use
+            their own observed rate over the support.
+            """
+            if threshold is None:
+                return 0.0
+            version = "v1" if "v1" in detector else "v2"
+            return stats[version]["by_threshold"][float(threshold)]["rate"]
         for title, dets in scenarios.items():
             emit(f"## Scenario {title}\n")
             emit("| Detector | TP | FP | FN | Precision | Recall | F1 |")
@@ -305,8 +381,13 @@ def main() -> int:
             for name, det in dets.items():
                 sc = score(det, labelled_eval)
                 scenario_scores[title][name] = sc
+                # "WITHOUT z-score (...)" also contains the substring, so match
+                # the versioned name or a COMBINED set that includes the score.
+                uses_z = "z-score v" in name or name.startswith("COMBINED")
+                thr = DEFAULT_Z if uses_z else None
+                record(name, title.split(" — ")[0], thr, det)
                 emit(f"| {name} | {sc.tp} | {sc.fp:,} | {sc.fn} | "
-                     f"{sc.precision:.3f} | {sc.recall:.3f} | {sc.f1:.3f} |")
+                     f"{pf(sc)} | {rf(sc)} | {sc.f1:.3f} |")
             emit("")
             emit(f"### Recall by anomaly type — scenario {title.split(' — ')[0]}\n")
             emit("| Anomaly type | n |" + "".join(f" {n} |" for n in dets))
@@ -335,10 +416,23 @@ def main() -> int:
             sc = score(det, labelled_eval)
             caught = sum(1 for i in labels_eval if label_days[i] & det)
             scen_b_by_t[t] = (sc, caught, len(det))
-            emit(f"| {t:g} | {sc.precision:.3f} | {sc.recall:.3f} | {sc.f1:.3f} | "
+            emit(f"| {t:g} | {pf(sc)} | {rf(sc)} | {sc.f1:.3f} | "
                  f"{caught}/{len(labels_eval)} | {len(det):,} | "
                  f"{len(det) / max(n_days, 1):.1f} |")
         emit("")
+
+        # Every threshold for both versions, in both scenarios, so the app can
+        # show the sweep without recomputing anything.
+        for version, rws in (("v1", rows_v1), ("v2", rows_v2)):
+            for t in Z_THRESHOLDS:
+                det = zset(rws, t)
+                record(f"z-score {version}", "A", t, det)
+                record(f"z-score {version}", "B", t, det)
+        for t in Z_THRESHOLDS:
+            record("COMBINED (v2 + dupes + late + gap)", "B", t,
+                   zset(rows_v2, t) | dupes | late | gaps)
+            record("COMBINED (deterministic + v2)", "A", t,
+                   recon | dupes | late | gaps | zset(rows_v2, t))
 
         # ---------- v2 per-type recall across thresholds ----------
         emit("## v2 recall by type across thresholds\n")
@@ -367,13 +461,29 @@ def main() -> int:
             emit(f"| `{kind}` | {len(ids)} | {caught} | {exp:.3f} | {verdict} |")
         emit("")
 
+        # ---------- publish the scorecard ----------
+        # The app reads DQ.DETECTOR_SCORECARD so it never touches
+        # RAW.ANOMALY_LABELS. This script is the only writer, and it lives in
+        # eval/ precisely because it is the only thing allowed to read labels.
+        card = pd.DataFrame(scorecard)
+        card["SCORED_AT"] = pd.Timestamp.utcnow().tz_localize(None)
+        card["LABELS_IN_SCOPE"] = len(labels_eval)
+        card["SUPPORT_ACCOUNT_DAYS"] = len(support)
+        write_pandas(
+            conn, card, table_name="DETECTOR_SCORECARD",
+            database="REVENUE_PULSE", schema="DQ",
+            auto_create_table=True, overwrite=True, use_logical_type=True,
+        )
+        cur.execute("SELECT COUNT(*) FROM REVENUE_PULSE.DQ.DETECTOR_SCORECARD")
+        print(f"\nWrote {cur.fetchone()[0]:,} rows to REVENUE_PULSE.DQ.DETECTOR_SCORECARD")
+
         report = "\n".join(L)
         print(report)
         RESULTS_PATH.write_text(
             HEADER + report
             + build_analysis(stats, sweep, scenario_scores, scenario_types,
                              v2_type_chance, types, labels_eval, v2_by_t,
-                             scen_b_by_t, n_days)
+                             scen_b_by_t, n_days, coverage)
         )
         print(f"Wrote {RESULTS_PATH.relative_to(Path.cwd())}")
     finally:
@@ -391,7 +501,7 @@ transcribed by hand.
 
 
 def build_analysis(stats, sweep, scen, scen_types, v2_chance, types, labels_eval, v2_by_t,
-                   scen_b_by_t, n_days_hint) -> str:
+                   scen_b_by_t, n_days_hint, coverage) -> str:
     A = "A — full data (ledger available)"
     B = "B — no daily ledger (finance closes monthly)"
     zA = f"z-score v2 (|z|>{DEFAULT_Z:g})"
@@ -407,7 +517,7 @@ def build_analysis(stats, sweep, scen, scen_types, v2_chance, types, labels_eval
     acomb = scen[A]["COMBINED (deterministic + v2)"]
     arecon = scen[A]["reconciliation"]
     b_rows = "\n".join(
-        f"| {t:g} | {scen_b_by_t[t][0].precision:.3f} | {scen_b_by_t[t][0].recall:.3f} | "
+        f"| {t:g} | {pf(scen_b_by_t[t][0])} | {rf(scen_b_by_t[t][0])} | "
         f"{scen_b_by_t[t][0].f1:.3f} | {scen_b_by_t[t][1]}/{len(labels_eval)} | "
         f"{scen_b_by_t[t][2] / max(n_days_hint, 1):.1f} |"
         for t in Z_THRESHOLDS
@@ -442,9 +552,10 @@ same-weekday points.
 
 ## Scenario A: with a daily ledger, the z-score is still redundant
 
-Reconciliation alone scores precision {arecon.precision:.3f}, recall
-{arecon.recall:.3f}, F1 {arecon.f1:.3f}. The deterministic set reaches F1
-{adet.f1:.3f}; adding v2 moves it to {acomb.f1:.3f}.
+Reconciliation alone scores precision {pf(arecon)}, recall {rf(arecon)}, F1
+{arecon.f1:.3f}. The deterministic set reaches F1 {adet.f1:.3f} (recall
+{rf(adet)}); adding v2 moves it to {acomb.f1:.3f} and drops precision to
+{pf(acomb)}.
 
 This was already v1's conclusion and v2 does not change it. When an independent
 ledger exists, subtraction beats statistics: the ledger witnesses every
@@ -460,8 +571,8 @@ booked-revenue feed to reconcile against.
 
 | | Precision | Recall | F1 | Labels caught |
 | --- | --- | --- | --- | --- |
-| Without the z-score | {bwo.precision:.3f} | {bwo.recall:.3f} | {bwo.f1:.3f} | {scen_types[B]["WITHOUT z-score (dupes+late+gap)"] and sum(v[0] for v in scen_types[B]["WITHOUT z-score (dupes+late+gap)"].values())}/{len(labels_eval)} |
-| v2 added (\|z\|>{DEFAULT_Z:g}) | {bcomb.precision:.3f} | {bcomb.recall:.3f} | {bcomb.f1:.3f} | {scen_b_by_t[DEFAULT_Z][1]}/{len(labels_eval)} |
+| Without the z-score | {pf(bwo)} | {rf(bwo)} | {bwo.f1:.3f} | {sum(v[0] for v in scen_types[B]["WITHOUT z-score (dupes+late+gap)"].values())}/{len(labels_eval)} |
+| v2 added (\|z\|>{DEFAULT_Z:g}) | {pf(bcomb)} | {rf(bcomb)} | {bcomb.f1:.3f} | {scen_b_by_t[DEFAULT_Z][1]}/{len(labels_eval)} |
 
 Without the z-score the surviving checks cover only the three fault types they
 were written for — `duplicate_load`, `late_arrival`, `pipeline_gap`. Adding v2
@@ -494,8 +605,8 @@ Scenario B across thresholds:
 The curve is steep and the coverage is almost flat. Going from \|z\|>5 to
 \|z\|>3 buys {scen_b_by_t[3.0][1] - scen_b_by_t[5.0][1]} extra label(s) — both
 `mild_spike` — and costs {scen_b_by_t[3.0][2] / max(scen_b_by_t[5.0][2], 1):.0f}x
-the review volume, dropping precision from {scen_b_by_t[5.0][0].precision:.3f}
-to {scen_b_by_t[3.0][0].precision:.3f}. The z-score's coverage of
+the review volume, dropping precision from {pf(scen_b_by_t[5.0][0])}
+to {pf(scen_b_by_t[3.0][0])}. The z-score's coverage of
 `duplicate_load` at low thresholds is redundant: `dq_duplicates` already
 catches all of them exactly.
 
@@ -507,21 +618,21 @@ That asymmetry is the whole recommendation. **Two tiers, not one threshold.**
 
 | Check | Precision | Why it can page |
 | --- | --- | --- |
-| `dq_reconciliation` (scenario A only) | {arecon.precision:.3f} | money that does not tie out against an independent source |
-| `dq_duplicates` (business grain) | {scen[A]['duplicates'].precision:.3f} | a duplicated load is unambiguous and mechanically fixable |
-| `dq_late_arrivals` | {scen[A]['late arrivals'].precision:.3f} | a stalled feed needs an owner now |
-| gap rule, zero-after-nonzero | {scen[A]['gap rule (zero-after-nonzero)'].precision:.3f} | an account billing nothing when it should is an outage |
+| `dq_reconciliation` (scenario A only) | {pf(arecon)} | money that does not tie out against an independent source |
+| `dq_duplicates` (business grain) | {pf(scen[A]['duplicates'])} | a duplicated load is unambiguous and mechanically fixable |
+| `dq_late_arrivals` | {pf(scen[A]['late arrivals'])} | a stalled feed needs an owner now |
+| gap rule, zero-after-nonzero | {pf(scen[A]['gap rule (zero-after-nonzero)'])} | an account billing nothing when it should is an outage |
 | source freshness error (72h) | — | the pipeline has stopped |
-| **v2 at \|z\|>5, scenario B only** | {scen_b_by_t[5.0][0].precision:.3f} | {scen_b_by_t[5.0][2] / max(len(labels_eval), 1):.1f} items per label-period; precise enough to wake someone *when there is no ledger* |
+| **v2 at \|z\|>5, scenario B only** | {pf(scen_b_by_t[5.0][0])} | {scen_b_by_t[5.0][2] / max(len(labels_eval), 1):.1f} items per label-period; precise enough to wake someone *when there is no ledger* |
 
 **Shows on a dashboard or review queue** — needs human judgement:
 
 | Signal | Precision | Why it must not page |
 | --- | --- | --- |
-| v2 at \|z\|>3, daily triage queue | {scen_b_by_t[3.0][0].precision:.3f} | {scen_b_by_t[3.0][2] / max(n_days_hint, 1):.1f} items/day is reviewable, but most are not incidents |
+| v2 at \|z\|>3, daily triage queue | {pf(scen_b_by_t[3.0][0])} | {scen_b_by_t[3.0][2] / max(n_days_hint, 1):.1f} items/day is reviewable, but most are not incidents |
 | `fct_weekly_review.vs_trailing_4w_pct` | — | the only signal that sees gradual drift; inherently weekly |
 | source freshness warning (36h) | — | expected on a static snapshot (see DECISIONS.md) |
-| v2 in scenario A, any threshold | {scen[A][zA].precision:.3f} | reconciliation already catches everything it does, with perfect precision |
+| v2 in scenario A, any threshold | {pf(scen[A][zA])} | reconciliation already catches everything it does, with perfect precision |
 
 So: in scenario A the z-score is decoration — keep it on the dashboard as a
 cross-check and let reconciliation page. In scenario B promote
@@ -531,6 +642,42 @@ cross-check and let reconciliation page. In scenario B promote
 The ordering principle: **page on checks that compare two independent sources,
 review everything that compares a series against its own history.** The first
 kind knows it is wrong; the second only knows it is unusual.
+
+## Future work: a cohort baseline for accounts under 13 weeks old
+
+v2's spread estimate needs {SPREAD_WEEKS} weeks of residual history, so a young
+account is not scored at all rather than scored badly. The cost is measurable:
+**{coverage['lost_days']:,} account-days** that v1 could score are outside v2's
+support ({coverage['support_v1']:,} down to {coverage['support_v2']:,}), and
+**{len(coverage['dropped'])} of {coverage['labels_total']} labels** fall in that
+blind spot ({", ".join(coverage['dropped']) if coverage['dropped'] else "none"}).
+
+This is the wrong trade for the riskiest accounts. A newly onboarded account is
+precisely where a misconfigured meter, a wrong price or a unit error is most
+likely, and it is exactly the window where v2 stays silent. "No history" is
+being treated as "no opinion", when the cohort already supplies one.
+
+The fix is to borrow, not to wait. `dq_anomaly_scores_v2` already computes a
+`pooled_sigma` per product x segment and uses it as a lower bound; the same
+cohort can supply the whole estimate when an account has too little history:
+
+1. **Spread** — use the cohort `pooled_sigma` directly instead of requiring
+   `min_spread_points`, with a widening factor while history is thin (for
+   example scaling by `sqrt(expected_points / actual_points)`) so early scores
+   are deliberately conservative rather than confidently wrong.
+2. **Expectation** — replace the same-weekday median with the cohort's weekday
+   *shape* (its median log-deviation per weekday) applied to the account's own
+   level from whatever days exist. The account supplies the level, the cohort
+   supplies the seasonality it has not yet demonstrated.
+3. **Blend out** — weight cohort against account estimates by observed points,
+   so a maturing account slides from fully pooled to fully self-estimated
+   instead of switching discontinuously at week 13.
+
+Worth stating plainly: this would widen bands, not narrow them, so it buys
+coverage at some cost in sensitivity on young accounts. The alternative — the
+current behaviour — is no coverage at all, which is strictly worse. It would
+also need its own evaluation, since none of the above is exercised by the
+labels that currently fall inside v2's support.
 """
 
 
