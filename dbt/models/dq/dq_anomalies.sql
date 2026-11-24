@@ -19,7 +19,9 @@
 
 with scored as (
 
-    select * from {{ ref('dq_anomaly_scores') }}
+    -- v2. dq_anomaly_scores (v1) is kept only as the evaluation baseline; see
+    -- eval/RESULTS.md for the v1 -> v2 comparison.
+    select * from {{ ref('dq_anomaly_scores_v2') }}
 
 )
 
@@ -35,8 +37,9 @@ select
         else 'robust_zscore'
     end                                             as rule,
     case when z > 0 then 'up' else 'down' end       as direction,
-    denominator,
-    history_points
+    sigma,
+    history_points,
+    spread_points
 from scored
 where is_zero_after_nonzero
    or abs(z) > {{ var('anomaly_z_threshold') }}

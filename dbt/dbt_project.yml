@@ -39,6 +39,29 @@ vars:
   min_history_points: 4
   trailing_weeks: 8
 
+  # --- detector v2 (dq_anomaly_scores_v2) ---
+  # Only the two causes diagnosed for v1 are changed: growth bias in the
+  # expectation, and an unstable spread estimated from 8 points. Nothing here
+  # was fitted to ANOMALY_LABELS.
+  #
+  # Trend correction: ratio of the trailing 7-day median to the 7-day median
+  # four weeks earlier. 7-day windows span a full weekday cycle, so the ratio
+  # is weekday-neutral; both windows exclude the scored day so an anomaly
+  # cannot inflate its own expectation.
+  trend_window_days: 7
+  trend_lag_days: 28
+  # Guard against degenerate ratios on ramping or near-zero accounts. A 4-week
+  # growth factor outside [0.5x, 2x] is treated as unmeasurable, not as trend.
+  trend_max_log_shift: 0.6931
+
+  # Spread: 13 weeks of residuals (all days, not one weekday), pooled with the
+  # product x segment cohort as a lower bound.
+  spread_weeks: 13
+  spread_pool_weight: 0.5
+  min_spread_points: 30
+  # Floor as a relative move, converted to log units in the model.
+  spread_floor_pct: 0.03
+
 models:
   revenue_pulse:
     staging:

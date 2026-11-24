@@ -206,6 +206,50 @@ match on label identity, never by comparing these two numbers.
 
 ---
 
+## 6. The evaluation script rebuilds everything it reads
+
+**What happened.** After regenerating the dataset with eight new anomalies, I
+refreshed the detector with `dbt build --select dq_anomaly_scores+` and scored
+it. The numbers were wrong — scored against the *previous* dataset.
+
+`dq_anomaly_scores+` selects that model and its descendants. It does not select
+its **ancestors**, so `fct_daily_revenue` was never rebuilt — and because the
+marts and DQ models are materialised as **tables**, they kept serving the old
+data silently. Views would have reflected the new RAW immediately; tables do
+not. Nothing failed, nothing warned.
+
+**How it surfaced.** The symptom was absurd rather than subtle: the
+late-arrival detector appeared to catch `ledger_mismatch` anomalies. Those
+account-days were the late-arrival days from the *earlier* generator run, still
+sitting in a stale table. A plausible-looking wrong number would have shipped.
+
+**The fix.** `eval/score_detector.py` now runs a rebuild itself before reading
+anything, and will not score if the build fails:
+
+```python
+SELECTOR = [
+    "+dq_anomaly_scores+",
+    "+dq_anomaly_scores_v2+",
+    "+dq_reconciliation+",
+    "+dq_duplicates+",
+    "+dq_late_arrivals+",
+]
+```
+
+Note the leading `+` on each. `+model+` selects ancestors *and* descendants;
+`model+` alone selects only descendants, which is exactly the mistake above.
+And all five models are listed deliberately: `dq_reconciliation`,
+`dq_duplicates` and `dq_late_arrivals` are neither ancestors nor descendants of
+the scores models, so a selector built around `dq_anomaly_scores` alone would
+leave three of the four detectors stale — the same bug in a new place.
+
+**The general lesson.** A table-materialised model is a cache, and every cache
+can be stale. A partial selector is an invitation to measure yesterday's data
+and believe it. Any script whose output is a number someone will act on should
+rebuild its own inputs rather than trust the state of the warehouse.
+
+---
+
 ## Environment notes
 
 RP_MONITOR is attached to RP_WH (checked as ACCOUNTADMIN). RP_ROLE can't see

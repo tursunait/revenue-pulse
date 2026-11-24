@@ -57,6 +57,20 @@ models:
         description: MAD floor applied, so this is never zero.
         data_tests: [not_null]
 
+  - name: dq_anomaly_scores_v2
+    description: >
+      Detector v2. Trend-corrected expectation in log space, spread from 13
+      weeks of residuals pooled with the product x segment cohort. Fixes the
+      growth bias and unstable spread measured for v1.
+    columns:
+      - name: account_id
+        data_tests: [not_null]
+      - name: usage_date
+        data_tests: [not_null]
+      - name: sigma
+        description: Never zero - floored at a few percent in log units.
+        data_tests: [not_null]
+
   - name: dq_anomalies
     description: >
       Account-days flagged by the robust z-score or the zero-after-nonzero
