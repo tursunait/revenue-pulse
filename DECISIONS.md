@@ -176,17 +176,25 @@ On production data the three DQ tests would be `severity='error'`.
 exception rows to planted anomalies with **zero unexplained rows** and 25/25
 anomalies caught.
 
-### Known gap: source freshness passes for the wrong reason
+### Source freshness: fixed, and expected to warn on a static snapshot
 
-`dbt source freshness` passes on `RAW.USAGE_EVENTS` — but only because the
-generator stamps `loaded_at` as `usage_date + 1 day`, so the newest row is
-dated *three hours in the future*. The computed age is **-3 hours**, which
-clears any threshold.
+This was originally broken in a way that looked fine. The generator stamped
+`loaded_at` as `usage_date + 1 day` and ran usage up to *today*, so the newest
+row was dated three hours in the **future**. The computed age was -3 hours,
+which clears any threshold — the check passed, and would have passed against a
+completely stalled pipeline.
 
-The test is therefore inert: it would pass even against a stalled pipeline. A
-real fix is to stop generating usage for the current day, or clamp `loaded_at`
-to no later than now, so that age reflects something. Worth knowing before
-quoting freshness coverage as a feature.
+Fixed in the generator: usage now ends **yesterday** (UTC), and `loaded_at` is
+clamped to no later than `now`. Freshness is configured `warn_after: 36h`,
+`error_after: 72h`, and passes on a fresh load with an age of a few hours.
+
+**Expect it to warn as the snapshot ages.** This is a static dataset: nothing
+reloads it, so 36 hours after a `generator/load.py` run the freshness check
+starts warning, and after 72 hours it errors. That is the check working, not a
+regression — re-run the generator and loader to reset it. It stops being a
+nuisance in Layer 2, when the Airflow daily run keeps `RAW` current and
+freshness becomes a genuine signal about the pipeline rather than about how
+long ago the snapshot was built.
 
 ### Note on reconciliation sign convention
 

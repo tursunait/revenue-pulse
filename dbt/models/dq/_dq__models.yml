@@ -38,3 +38,38 @@ models:
         data_tests: [not_null]
       - name: lag_days
         data_tests: [not_null]
+
+  - name: dq_anomaly_scores
+    description: >
+      Robust z-score per account x product x day against the same weekday over
+      the trailing 8 weeks. Scores every account-day; applies no threshold.
+    columns:
+      - name: account_id
+        data_tests: [not_null]
+      - name: usage_date
+        data_tests: [not_null]
+      - name: product
+        data_tests:
+          - accepted_values:
+              arguments:
+                values: [compute, storage, ai_services, serverless]
+      - name: denominator
+        description: MAD floor applied, so this is never zero.
+        data_tests: [not_null]
+
+  - name: dq_anomalies
+    description: >
+      Account-days flagged by the robust z-score or the zero-after-nonzero
+      rule. Unlike the other DQ models this is a detector, not an invariant
+      check, so a non-zero row count is expected.
+    columns:
+      - name: account_id
+        data_tests: [not_null]
+      - name: usage_date
+        data_tests: [not_null]
+      - name: rule
+        data_tests:
+          - not_null
+          - accepted_values:
+              arguments:
+                values: [robust_zscore, zero_after_nonzero]

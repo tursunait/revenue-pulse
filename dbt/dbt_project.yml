@@ -22,6 +22,23 @@ vars:
   recon_rel_pct: 0.5
   recon_abs_usd: 0.01
 
+  # --- robust z-score detector (dq_anomalies) ---
+  # |z| above this is flagged. Chosen by sweeping 3 / 3.5 / 4 / 5 against the
+  # label set - see eval/RESULTS.md. Nothing else here is tuned to the labels.
+  anomaly_z_threshold: 4
+
+  # MAD floor. A series that sits at the same value every weekday has MAD ~ 0,
+  # which would make z explode on any movement at all. The floor is expressed
+  # as a fraction of the expected value so it scales with account size, with a
+  # tiny absolute term to cover an expected value of 0.
+  mad_floor_pct_of_median: 0.05
+  mad_floor_abs_usd: 0.01
+
+  # Same-weekday observations required in the trailing window before a z-score
+  # is trusted. 8 weeks of history gives at most 8.
+  min_history_points: 4
+  trailing_weeks: 8
+
 models:
   revenue_pulse:
     staging:

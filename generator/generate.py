@@ -39,7 +39,7 @@ from __future__ import annotations
 
 import os
 import sys
-from datetime import date, datetime, time, timedelta
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -109,7 +109,11 @@ NOISE_SIGMA = 0.18
 LOAD_HOUR = 2
 LOAD_JITTER_MINUTES = 45
 
-#: How many of each anomaly type to plant (25 total).
+#: How many of each anomaly type to plant (33 total).
+#:
+#: The first six types are obvious: large, single-day, high-contrast faults.
+#: The last three are deliberately subtle, to stop the detector looking better
+#: than it is - a 10x spike is easy, a 1.6x spike on a tiny account is not.
 ANOMALY_PLAN = {
     "spike": 6,
     "late_arrival": 5,
@@ -117,16 +121,44 @@ ANOMALY_PLAN = {
     "ledger_mismatch": 4,
     "pipeline_gap": 3,
     "unit_error": 3,
+    # -- subtle --
+    "mild_spike": 3,
+    "small_account_spike": 3,
+    "gradual_drift": 2,
 }
+
+#: Mild spikes sit just above normal day-to-day noise (sigma 0.18).
+MILD_SPIKE_RANGE = (1.5, 2.0)
+
+#: Small-account spikes use the SAME multiplier range as the obvious spikes, so
+#: the only variable is account size. That isolates the question the test is
+#: asking: does detection depend on how big the account is?
+SMALL_ACCOUNT_QUANTILE = 0.20
+
+#: Gradual drift: a linear ramp to +20% over 21 days. No single day moves much,
+#: which is exactly what a day-over-day detector is blind to.
+DRIFT_PCT = 0.20
+DRIFT_DAYS = 21
 
 #: Leave a warm-up and cool-down margin so rolling baselines have history.
 ANOMALY_MARGIN_DAYS = 30
 
 
+def utc_now() -> datetime:
+    """Current UTC time, naive. Every timestamp in this dataset is naive UTC."""
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
 def window() -> tuple[date, date]:
-    """Return (start, end) of the 365-day window, inclusive."""
+    """Return (start, end) of the 365-day window, inclusive.
+
+    Ends YESTERDAY, not today. Today's usage has not finished accruing, and a
+    partial final day would make the newest loaded_at land in the future -
+    which silently disables source freshness, since a negative age clears any
+    threshold.
+    """
     override = os.environ.get("RP_END_DATE")
-    end = date.fromisoformat(override) if override else date.today()
+    end = date.fromisoformat(override) if override else utc_now().date() - timedelta(days=1)
     return end - timedelta(days=N_DAYS - 1), end
 
 
@@ -182,6 +214,12 @@ def build_accounts(rng: np.random.Generator, start: date, end: date) -> pd.DataF
             "credit_scale": scale.round(3),
         }
     )
+
+
+def clamp_to_now(stamps: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    """Cap load timestamps at the current UTC time."""
+    cap = np.datetime64(utc_now(), "ns")
+    return pd.DatetimeIndex(np.minimum(stamps.values.astype("datetime64[ns]"), cap))
 
 
 def build_usage(
@@ -248,6 +286,10 @@ def build_usage(
         + pd.Timedelta(hours=LOAD_HOUR)
         + pd.to_timedelta(jitter, unit="m")
     )
+    # Nothing can have been loaded in the future. Without this clamp the newest
+    # loaded_at sits ahead of now, source freshness computes a negative age,
+    # and the check passes no matter how stale the pipeline actually is.
+    loaded_at = clamp_to_now(loaded_at)
 
     usage = pd.DataFrame(
         {
@@ -280,23 +322,45 @@ def build_ledger(usage: pd.DataFrame) -> pd.DataFrame:
     return ledger.sort_values(["revenue_date", "account_id"]).reset_index(drop=True)
 
 
+def _small_accounts(usage: pd.DataFrame, quantile: float) -> set[str]:
+    """Account ids in the bottom `quantile` by total revenue over the window."""
+    revenue = usage["credits"] * usage["price_per_credit"]
+    totals = usage.assign(revenue=revenue).groupby("account_id")["revenue"].sum()
+    cutoff = totals.quantile(quantile)
+    return set(totals[totals <= cutoff].index)
+
+
 def _candidate_pool(
-    rng: np.random.Generator, usage: pd.DataFrame, start: date, end: date
+    rng: np.random.Generator,
+    usage: pd.DataFrame,
+    start: date,
+    end: date,
+    *,
+    lo_days: int = ANOMALY_MARGIN_DAYS,
+    hi_days: int = 5,
+    accounts: set[str] | None = None,
+    drop_bottom_quantile: float = 0.25,
 ) -> list[tuple[str, pd.Timestamp]]:
     """(account_id, usage_date) pairs eligible to carry an anomaly.
 
-    Restricted to the interior of the window so rolling baselines have history
-    on both sides, and to accounts with enough volume that an anomaly is
-    meaningful rather than noise on a near-zero day.
+    Bounded away from both ends of the window so rolling baselines have history
+    either side. `hi_days` has to leave room for whatever the anomaly does
+    *after* its start date - a 21-day drift or a 7-day load delay must still
+    land inside the window, or the label would describe days that hold no data.
+
+    By default the bottom quartile of account-days is dropped as too small to
+    anchor an anomaly. The small-account spikes deliberately pass
+    drop_bottom_quantile=0 and an `accounts` filter to do the opposite.
     """
-    lo = pd.Timestamp(start + timedelta(days=ANOMALY_MARGIN_DAYS))
-    hi = pd.Timestamp(end - timedelta(days=5))
+    lo = pd.Timestamp(start + timedelta(days=lo_days))
+    hi = pd.Timestamp(end - timedelta(days=hi_days))
     interior = usage[(usage["usage_date"] >= lo) & (usage["usage_date"] <= hi)]
+    if accounts is not None:
+        interior = interior[interior["account_id"].isin(accounts)]
 
     daily = interior.groupby(["account_id", "usage_date"], as_index=False)["credits"].sum()
-    # Drop the bottom quartile of account-days: too small to anchor an anomaly.
-    threshold = daily["credits"].quantile(0.25)
-    daily = daily[daily["credits"] >= threshold]
+    if drop_bottom_quantile > 0:
+        daily = daily[daily["credits"] >= daily["credits"].quantile(drop_bottom_quantile)]
 
     pairs = list(daily[["account_id", "usage_date"]].itertuples(index=False, name=None))
     rng.shuffle(pairs)
@@ -316,25 +380,41 @@ def inject_anomalies(
     pair exclusively, so two anomalies never stack on the same account-day and
     every label describes exactly one detectable event.
     """
-    pool = _candidate_pool(rng, usage, start, end)
-    cursor = 0
+    # Several pools, because different anomalies need different room at the
+    # end of the window. They share one `claimed` set, so no account-day ever
+    # carries two anomalies and every label describes one isolated event.
+    pools = {
+        "main": _candidate_pool(rng, usage, start, end),
+        # +7 days of load delay must still be in the past.
+        "late": _candidate_pool(rng, usage, start, end, hi_days=10),
+        # a 21-day ramp must fit inside the window.
+        "drift": _candidate_pool(rng, usage, start, end, hi_days=DRIFT_DAYS + 5),
+        # the opposite selection: only the smallest accounts, keeping their
+        # quiet days rather than discarding them.
+        "small": _candidate_pool(
+            rng, usage, start, end,
+            accounts=_small_accounts(usage, SMALL_ACCOUNT_QUANTILE),
+            drop_bottom_quantile=0.0,
+        ),
+    }
+    cursors: dict[str, int] = {name: 0 for name in pools}
     claimed: set[tuple[str, pd.Timestamp]] = set()
     labels: list[dict] = []
     drop_mask = np.zeros(len(usage), dtype=bool)
     dup_frames: list[pd.DataFrame] = []
 
-    def claim(span_days: int = 1) -> tuple[str, pd.Timestamp]:
+    def claim(span_days: int = 1, pool: str = "main") -> tuple[str, pd.Timestamp]:
         """Take the next unclaimed account-day, reserving `span_days` of it."""
-        nonlocal cursor
-        while cursor < len(pool):
-            account_id, day = pool[cursor]
-            cursor += 1
+        candidates = pools[pool]
+        while cursors[pool] < len(candidates):
+            account_id, day = candidates[cursors[pool]]
+            cursors[pool] += 1
             span = [(account_id, day + pd.Timedelta(days=i)) for i in range(span_days)]
             if any(key in claimed for key in span):
                 continue
             claimed.update(span)
             return account_id, day
-        raise RuntimeError("ran out of candidate account-days for anomalies")
+        raise RuntimeError(f"ran out of candidate account-days in pool {pool!r}")
 
     def add_label(**kwargs) -> None:
         labels.append({"label_id": f"ANOM{len(labels) + 1:03d}", **kwargs})
@@ -430,11 +510,11 @@ def inject_anomalies(
 
     # -- late_arrival: correct values, but loaded 3+ days late --------------
     for _ in range(ANOMALY_PLAN["late_arrival"]):
-        account_id, day = claim()
+        account_id, day = claim(pool="late")
         delay_days = int(rng.integers(3, 8))
         rows = (usage["account_id"] == account_id) & (usage["usage_date"] == day)
-        usage.loc[rows, "loaded_at"] = usage.loc[rows, "loaded_at"] + pd.Timedelta(
-            days=delay_days
+        usage.loc[rows, "loaded_at"] = clamp_to_now(
+            pd.DatetimeIndex(usage.loc[rows, "loaded_at"] + pd.Timedelta(days=delay_days))
         )
         add_label(
             anomaly_type="late_arrival",
@@ -474,6 +554,91 @@ def inject_anomalies(
             description=(
                 f"ledger booked {abs(pct) * 100:.1f}% "
                 f"{'above' if sign > 0 else 'below'} the usage revenue"
+            ),
+        )
+
+    # -- mild_spike: 1.5-2x, just above normal day-to-day noise -------------
+    for _ in range(ANOMALY_PLAN["mild_spike"]):
+        account_id, day = claim()
+        product = str(rng.choice(PRODUCTS))
+        multiplier = float(rng.uniform(*MILD_SPIKE_RANGE))
+        rows = (
+            (usage["account_id"] == account_id)
+            & (usage["usage_date"] == day)
+            & (usage["product"] == product)
+        )
+        usage.loc[rows, "credits"] = (usage.loc[rows, "credits"] * multiplier).round(3)
+        add_label(
+            anomaly_type="mild_spike",
+            account_id=account_id,
+            product=product,
+            start_date=day,
+            end_date=day,
+            magnitude=round(multiplier, 2),
+            direction="up",
+            rows_affected=int(rows.sum()),
+            description=(
+                f"{product} credits multiplied by {multiplier:.2f}x - close to "
+                "ordinary daily variation"
+            ),
+        )
+
+    # -- small_account_spike: a clear spike, but on a bottom-20% account -----
+    for _ in range(ANOMALY_PLAN["small_account_spike"]):
+        account_id, day = claim(pool="small")
+        product = str(rng.choice(PRODUCTS))
+        multiplier = float(rng.uniform(8.0, 15.0))
+        rows = (
+            (usage["account_id"] == account_id)
+            & (usage["usage_date"] == day)
+            & (usage["product"] == product)
+        )
+        usage.loc[rows, "credits"] = (usage.loc[rows, "credits"] * multiplier).round(3)
+        add_label(
+            anomaly_type="small_account_spike",
+            account_id=account_id,
+            product=product,
+            start_date=day,
+            end_date=day,
+            magnitude=round(multiplier, 2),
+            direction="up",
+            rows_affected=int(rows.sum()),
+            description=(
+                f"{product} credits multiplied by {multiplier:.1f}x on a "
+                "bottom-20% account by revenue"
+            ),
+        )
+
+    # -- gradual_drift: linear ramp to +20% over 21 days --------------------
+    for _ in range(ANOMALY_PLAN["gradual_drift"]):
+        account_id, day = claim(span_days=DRIFT_DAYS, pool="drift")
+        last_day = day + pd.Timedelta(days=DRIFT_DAYS - 1)
+        rows = (
+            (usage["account_id"] == account_id)
+            & (usage["usage_date"] >= day)
+            & (usage["usage_date"] <= last_day)
+        )
+        # Ramp factor depends on how far into the drift each day sits, so no
+        # single day jumps: the first day is +0%, the last +20%.
+        offsets = (
+            usage.loc[rows, "usage_date"] - day
+        ).dt.days.to_numpy(dtype=float)
+        factor = 1.0 + DRIFT_PCT * offsets / max(DRIFT_DAYS - 1, 1)
+        usage.loc[rows, "credits"] = (
+            usage.loc[rows, "credits"].to_numpy() * factor
+        ).round(3)
+        add_label(
+            anomaly_type="gradual_drift",
+            account_id=account_id,
+            product=None,
+            start_date=day,
+            end_date=last_day,
+            magnitude=round(DRIFT_PCT * 100, 2),
+            direction="up",
+            rows_affected=int(rows.sum()),
+            description=(
+                f"all products ramp linearly to +{DRIFT_PCT * 100:.0f}% over "
+                f"{DRIFT_DAYS} days; no single day moves much"
             ),
         )
 
