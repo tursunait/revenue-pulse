@@ -227,3 +227,6 @@ __marimo__/
 *.pem
 *.pub
 *.key
+
+# Generated synthetic data (rebuild with generator/generate.py)
+data/
