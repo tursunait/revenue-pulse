@@ -82,6 +82,102 @@ instead of the detector table; everything else still works.
 First load takes a few seconds: `RP_WH` has been suspended for 60s and must
 resume before the first query returns.
 
+## Owner role and warehouse in the Workspaces editor
+
+A Streamlit in Snowflake app runs with **owner's rights**. There is no
+`EXECUTE AS` setting — the role that *owns the STREAMLIT object* is the role
+every query executes as, for every viewer. So "make it run as `RP_ROLE`" means
+"make `RP_ROLE` own the object".
+
+### Your app is currently not owned by RP_ROLE
+
+Checked against the account:
+
+```sql
+-- run as RP_ROLE
+SHOW STREAMLITS IN ACCOUNT;   -->  0 rows
+```
+
+`SHOW` only returns objects the active role has privileges on. Zero rows while
+the app is live in Snowsight means it was created under a different role —
+almost certainly `ACCOUNTADMIN`, since that is the default role on a trial
+account. It is therefore querying as `ACCOUNTADMIN` today.
+
+### Where the two settings live
+
+In the Workspaces editor the controls are split, which is the part that catches
+people out:
+
+| Setting | Where | Notes |
+| --- | --- | --- |
+| **Owner role** | the **role selector**, top-right of Snowsight (or the role dropdown in the workspace header) — *set before creating the app* | Not in the deploy dialog. Whatever role is active at creation becomes the owner, permanently, unless ownership is transferred. |
+| **Query warehouse** | the deploy / app-settings panel, labelled **App warehouse** or **Query warehouse** | Changeable later with `ALTER STREAMLIT`. |
+
+UI labels and panel positions have moved more than once across Snowsight
+releases, so treat the SQL below as authoritative and the UI steps as a guide.
+
+### Verify what you actually have
+
+Run as `ACCOUNTADMIN` so nothing is hidden by privilege:
+
+```sql
+USE ROLE ACCOUNTADMIN;
+SHOW STREAMLITS IN ACCOUNT;
+-- read the "owner" and "query_warehouse" columns
+```
+
+Or, more precisely:
+
+```sql
+SELECT "name", "database_name", "schema_name", "owner", "query_warehouse"
+FROM TABLE(RESULT_SCAN(LAST_QUERY_ID()));
+```
+
+### Fix it without redeploying
+
+Transfer ownership and pin the warehouse:
+
+```sql
+USE ROLE ACCOUNTADMIN;
+
+-- 1. Ownership determines the execution role.
+GRANT OWNERSHIP ON STREAMLIT <db>.<schema>.<app_name>
+  TO ROLE RP_ROLE COPY CURRENT GRANTS;
+
+-- 2. Pin the compute.
+ALTER STREAMLIT <db>.<schema>.<app_name> SET QUERY_WAREHOUSE = RP_WH;
+
+-- 3. Confirm.
+SHOW STREAMLITS IN ACCOUNT;   -- owner = RP_ROLE, query_warehouse = RP_WH
+```
+
+`COPY CURRENT GRANTS` keeps any viewer grants already handed out. If the app
+object sits in a schema `RP_ROLE` does not own, also grant
+`USAGE` on that database and schema to `RP_ROLE`, or move the app into
+`REVENUE_PULSE.MARTS`, which `RP_ROLE` already owns.
+
+### Confirm it from inside the running app
+
+The surest check is what the app itself reports. Add this temporarily to any
+page:
+
+```python
+st.write(session().sql(
+    "SELECT CURRENT_ROLE(), CURRENT_WAREHOUSE(), CURRENT_DATABASE()"
+).to_pandas())
+```
+
+Expect `RP_ROLE`, `RP_WH`, `REVENUE_PULSE`. If it says `ACCOUNTADMIN`, the
+ownership transfer has not taken effect.
+
+### Why this matters beyond tidiness
+
+Running as `ACCOUNTADMIN` means the app's queries carry the highest privilege
+in the account, and its compute is **not** covered by `RP_MONITOR` unless the
+warehouse is also `RP_WH`. Both of the guardrails this project set up — least
+privilege and the 5-credit cap — are bypassed. Transferring ownership to
+`RP_ROLE` on `RP_WH` puts the app back inside them.
+
 ## Alternative: deploy from a stage (scriptable, uses environment.yml)
 
 Snowsight cannot `PUT` files, so this path needs a client — the Python
@@ -116,9 +212,20 @@ Redeploying is then a re-`PUT` plus a browser refresh.
 
 **Weekly Review** — a health banner (red if any page-tier check fired for the
 selected week, amber if only review-queue items exist, green otherwise) with a
-button through to Data Health; four KPI cards; 13 weeks of revenue by product
-and by segment; top movers up and down, ranked by **dollar** change rather than
-percentage, because a 400% swing on a $3 account is not a mover.
+button through to Data Health; four KPI cards; a **Reported / Adjusted** toggle;
+13 **complete** weeks of revenue by product and by segment; top movers up and
+down, ranked by **dollar** change rather than percentage, because a 400% swing
+on a $3 account is not a mover.
+
+The week selector defaults to the newest **complete** week and labels a partial
+one `2026-11-23 — partial (1 of 7 days)`. Partial weeks are excluded from trend
+charts and from every comparison — see DECISIONS.md part 7 for why they are
+withheld rather than pro-rated. In **Reported** mode, weeks carrying an open
+page-tier issue are marked on the charts with a tooltip naming the issue, and
+the KPI row states how much of the week is under review. In **Adjusted** mode,
+account-days with an open amount-affecting issue are dropped and the caption
+says how many; late arrivals are not dropped, since their values are correct.
+DECISIONS.md part 8 covers the trade-off.
 
 **Data Health** — a week selector, then page-tier alerts and the review queue
 as separate tables, because they mean different things: page-tier checks

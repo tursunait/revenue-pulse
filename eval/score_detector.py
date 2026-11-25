@@ -429,6 +429,13 @@ def main() -> int:
                 record(f"z-score {version}", "A", t, det)
                 record(f"z-score {version}", "B", t, det)
         for t in Z_THRESHOLDS:
+            # The scenario tables above already recorded both COMBINED sets at
+            # DEFAULT_Z. Re-recording them here produced byte-identical duplicate
+            # rows - 20 of them - which the app then rendered twice. Nothing was
+            # missing a distinguishing column; the writer was simply called twice
+            # for the same key.
+            if t == DEFAULT_Z:
+                continue
             record("COMBINED (v2 + dupes + late + gap)", "B", t,
                    zset(rows_v2, t) | dupes | late | gaps)
             record("COMBINED (deterministic + v2)", "A", t,
@@ -466,6 +473,15 @@ def main() -> int:
         # RAW.ANOMALY_LABELS. This script is the only writer, and it lives in
         # eval/ precisely because it is the only thing allowed to read labels.
         card = pd.DataFrame(scorecard)
+        key = ["DETECTOR", "SCENARIO", "THRESHOLD", "ANOMALY_TYPE"]
+        dupes_found = card.duplicated(subset=key, keep=False)
+        if dupes_found.any():
+            offenders = (card.loc[dupes_found, key]
+                         .drop_duplicates().to_string(index=False))
+            raise SystemExit(
+                "refusing to publish a scorecard with duplicate keys "
+                f"({int(dupes_found.sum())} rows):\n{offenders}"
+            )
         card["SCORED_AT"] = pd.Timestamp.utcnow().tz_localize(None)
         card["LABELS_IN_SCOPE"] = len(labels_eval)
         card["SUPPORT_ACCOUNT_DAYS"] = len(support)
