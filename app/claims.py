@@ -22,6 +22,13 @@ Four checks, each one a claim type that survived numeric verification:
                    a commercial explanation
   unsupported      no superlative the JSON cannot support, and no claim that
                    movement is real merely because nothing was flagged
+  missing_content  when a material amount is under review, the brief must say
+                   which way revenue went EXCLUDING it
+
+The last one is the only check about something absent rather than wrong. It
+exists because a brief can be entirely accurate and still mislead by omission:
+"reported revenue up 34.6%" is true, and useless, when $134,036 of that is a
+unit error.
 """
 
 from __future__ import annotations
@@ -31,6 +38,20 @@ import re
 from dataclasses import dataclass
 
 IDENTIFIER = re.compile(r"\b[A-Z]{2,}\d{3,}\b")
+
+#: Materiality thresholds. Defined here rather than in the app because the
+#: required-content check needs them too, and two copies would drift. The app
+#: imports these for its banner and KPI cards.
+MATERIAL_SHARE_PCT = 0.5        # % of the week's revenue
+MATERIAL_ABS_USD = 5_000.0      # dollars
+
+
+def is_material(under_review_usd: float, week_revenue: float | None) -> bool:
+    """Either gate is enough - see DECISIONS.md part 9."""
+    if not under_review_usd:
+        return False
+    share = (under_review_usd / week_revenue * 100) if week_revenue else 0.0
+    return under_review_usd > MATERIAL_ABS_USD or share > MATERIAL_SHARE_PCT
 
 UP_WORDS = {"rose", "up", "gained", "added", "increased", "grew", "growth",
             "climbed", "higher", "gains", "rise", "riser", "risers"}
@@ -211,6 +232,7 @@ def check_claims(summary: str, input_json: str | dict) -> list[ClaimIssue]:
         _check_rebound(bullet, i, movers, issues)
         _check_unsupported(bullet, i, payload, issues)
 
+    issues.extend(check_required_content(summary, payload))
     issues.sort(key=lambda x: (SEVERITY_ORDER.get(x.severity, 9), x.bullet_index))
     return issues
 
@@ -325,3 +347,83 @@ def _check_unsupported(bullet, index, payload, issues) -> None:
                 "is real. The checks cover specific known failure modes, not "
                 "every possible fault.",
             ))
+
+
+#: Words that signal the brief is talking about the excluding-under-review
+#: basis rather than the reported headline.
+ADJUSTED_MARKERS = {"excluding", "excludes", "excluded", "excl", "adjusted",
+                    "stripping", "removing", "net of", "without"}
+
+#: Direction words, for asserting that a direction was actually stated.
+_UP = UP_WORDS
+_DOWN = DOWN_WORDS
+
+
+def check_required_content(summary: str, input_json: str | dict) -> list[ClaimIssue]:
+    """When a material amount is under review, the adjusted direction is required.
+
+    Matching is on substance, not phrasing: a bullet qualifies if it marks the
+    adjusted basis and either states the direction in words or quotes
+    adjusted_wow_pct. The wording is left to the model.
+    """
+    payload = json.loads(input_json) if isinstance(input_json, str) else input_json
+    issues: list[ClaimIssue] = []
+
+    if not payload.get("under_review_is_material"):
+        return issues
+
+    direction = payload.get("adjusted_direction")
+    adjusted_pct = payload.get("adjusted_wow_pct")
+    adjusted_revenue = payload.get("revenue_excluding_items_under_review")
+    if direction is None:
+        return issues                      # nothing to compare against
+
+    want_words = _UP if direction == "up" else _DOWN if direction == "down" else set()
+
+    for index, bullet in enumerate(
+        [b.strip() for b in summary.splitlines() if b.strip()], start=1
+    ):
+        low = bullet.lower()
+        marks_basis = (
+            any(marker in low for marker in ADJUSTED_MARKERS)
+            or (adjusted_revenue is not None
+                and _mentions_number(bullet, adjusted_revenue))
+        )
+        if not marks_basis:
+            continue
+        states_direction = bool(_words(bullet) & want_words)
+        quotes_pct = adjusted_pct is not None and _mentions_number(
+            bullet, adjusted_pct, tolerance=0.05
+        )
+        if states_direction or quotes_pct:
+            return issues                  # requirement satisfied
+
+    issues.append(ClaimIssue(
+        "missing_content", "error", 0, "(whole summary)",
+        f"${float(payload.get('under_review_usd') or 0):,.2f} is under review and "
+        f"material, but no bullet states which way revenue went excluding it "
+        f"(adjusted_direction is '{direction}', adjusted_wow_pct "
+        f"{adjusted_pct}). A reader seeing only the reported headline draws the "
+        "wrong conclusion.",
+    ))
+    return issues
+
+
+def _mentions_number(text: str, value: float, tolerance: float | None = None) -> bool:
+    """Is `value` written somewhere in this text, allowing for rounding?"""
+    target = abs(float(value))
+    tol = tolerance if tolerance is not None else max(1.0, target * 0.01)
+    for match in re.finditer(r"\d[\d,]*(?:\.\d+)?\s*[KkMm]?", text):
+        token = match.group(0).strip()
+        scale = 1
+        if token[-1:].lower() == "k":
+            scale, token = 1_000, token[:-1]
+        elif token[-1:].lower() == "m":
+            scale, token = 1_000_000, token[:-1]
+        try:
+            written = abs(float(token.replace(",", "").strip())) * scale
+        except ValueError:
+            continue
+        if abs(written - target) <= max(tol, target * 0.005):
+            return True
+    return False

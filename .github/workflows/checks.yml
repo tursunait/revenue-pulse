@@ -1,0 +1,55 @@
+name: checks
+
+# Runs only what can run without a warehouse. Everything that needs Snowflake -
+# dbt build, the detector scorecard, summary generation - is left out on
+# purpose: a CI job that needs live credentials either fails for contributors
+# or forces secrets into the repo, and neither is worth it for a portfolio
+# project. dbt parse still catches a broken model, macro or ref.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install pinned dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Checker regression suite
+        # Pure Python: no warehouse, no API calls. Asserts that the verifier
+        # and the claim checks catch what they should and - as importantly -
+        # stay quiet on correct output.
+        run: python eval/test_checks.py
+
+      - name: App artifacts match the app's imports
+        # Catches a module that would be missing from a `snow streamlit deploy`.
+        run: python scripts/check_app_artifacts.py
+
+      - name: dbt parse
+        # Compiles every model, macro and ref without connecting. The profile
+        # must resolve, so dummy values are supplied; none of them are used
+        # because parsing does not open a connection.
+        working-directory: dbt
+        env:
+          DBT_PROFILES_DIR: .
+          SNOWFLAKE_ACCOUNT: ci-placeholder
+          SNOWFLAKE_USER: ci-placeholder
+          SNOWFLAKE_PRIVATE_KEY_PATH: /dev/null
+          SNOWFLAKE_PRIVATE_KEY_PASSPHRASE: ""
+          SNOWFLAKE_ROLE: RP_ROLE
+          SNOWFLAKE_WAREHOUSE: RP_WH
+          SNOWFLAKE_DATABASE: REVENUE_PULSE
+          HOME: /home/runner
+        run: dbt parse --no-partial-parse

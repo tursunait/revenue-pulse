@@ -101,6 +101,16 @@ two = numbers_in("- down 1.4% from $377,378")
 check("a movement word governs only the first number after it",
       two["1.4%"]["sign"] == -1 and two["$377,378"]["sign"] is None,
       f"1.4%={two['1.4%']['sign']}, $377,378={two['$377,378']['sign']}")
+# An explicitly-signed number must still CONSUME the governor, or the word
+# falls through and asserts a sign on the next figure.
+explicit = numbers_in("- revenue was $482,973, up +34.6% from $358,801 the prior week")
+check("an explicitly-signed number consumes its governor",
+      explicit["$358,801"]["sign"] is None,
+      f"$358,801={explicit['$358,801']['sign']}")
+down = numbers_in("- revenue was $482,973, down -34.6% from $358,801 the prior week")
+check("a 'down' governor does not leak onto the prior-week figure",
+      down["$358,801"]["sign"] is None,
+      f"$358,801={down['$358,801']['sign']}")
 
 print("\nmatching: a flipped sign must fail")
 good = "- Reported revenue was $482,973, up +34.6% from $358,801 the prior week."

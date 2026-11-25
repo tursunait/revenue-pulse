@@ -46,7 +46,7 @@ from components import (
     status_badge,
     styled_table,
 )
-from claims import check_claims
+from claims import MATERIAL_ABS_USD, MATERIAL_SHARE_PCT, check_claims
 from verifier import verify
 
 st.set_page_config(page_title="Revenue Pulse", page_icon="📈", layout="wide")
@@ -67,8 +67,8 @@ if "page" not in st.session_state:
 #
 # Data Health lists every item regardless of materiality.
 # --------------------------------------------------------------------------
-MATERIAL_SHARE_PCT = 0.5        # % of the week's revenue
-MATERIAL_ABS_USD = 5_000.0      # dollars
+# Imported from app/claims.py, which is the single definition - the
+# required-content check needs the same numbers and two copies would drift.
 #
 # The absolute gate was first set at $1,000. Applied to the chart markers it
 # turned 5 of the last 13 weeks red - three of them for ~$1,100 against a
@@ -86,6 +86,10 @@ MATERIAL_ABS_USD = 5_000.0      # dollars
 #: after the flagged day so it is not pinned to the right edge.
 INSPECT_WEEKS = 13
 INSPECT_TRAILING_DAYS = 7
+
+#: Above this actual-to-expected ratio the Inspect chart defaults to log scale,
+#: because a linear axis compresses the expected band into a flat line.
+LOG_SCALE_RATIO = 10
 
 #: Rows per direction in Top movers. Each direction is ranked separately, so
 #: both lists are this long whenever enough accounts moved that way.
@@ -233,7 +237,18 @@ def page_weekly_review(week_start) -> None:
         note("Withheld for a partial week: the comparison would be against a full "
              "seven-day week.")
         return
-    movers = q.top_movers(week_start, limit=TOP_MOVERS_N)
+
+    # Movers are ALWAYS computed excluding account-days under review, whatever
+    # the Reported/Excluding toggle says. The toggle governs the revenue
+    # figures; this list answers a different question - what changed in the
+    # business - and a data-quality artefact is not business movement. On the
+    # reported basis the two largest movers for 2026-10-05 were the unit error
+    # itself (+$133,750) and the same account's rebound the following week
+    # (-$13,992), which pushed two real movers off the list entirely.
+    # DECISIONS.md part 11. The brief uses the same basis, so the app and the
+    # summary cannot disagree about who moved.
+    movers = q.top_movers(week_start, limit=TOP_MOVERS_N,
+                          basis="excluding_under_review")
     if movers.empty:
         note("No prior complete week to compare against.")
         return
@@ -247,17 +262,82 @@ def page_weekly_review(week_start) -> None:
     with right:
         st.caption(f"Down — top {len(down)} of {totals['down']:,} accounts that fell")
         _movers_table(down)
+
+    md_caption("Movers exclude account-days under review; see Data Health for "
+               "those items.")
+
     if len(up) != len(down):
         note(f"Lists are uneven because only {min(len(up), len(down))} account(s) "
              f"moved in one direction, not because of where the list was cut.")
+
+    _excluded_movers_line(week_start, mode)
+
     note(f"Each side shows the top {TOP_MOVERS_N} by dollar change, ranked "
          "separately so the two lists are the same length. Dollar change rather "
          "than percentage: a large percentage move on a very small account is not "
          "a mover worth a review meeting.")
 
 
+def _excluded_movers_line(week_start, mode: str) -> None:
+    """In Reported mode, say what the basis difference does to this list.
+
+    The revenue figures above are on the reported basis while this list is not,
+    so the gap is stated rather than left for a reader to notice.
+
+    Absence is not the only effect, and on its own it understates the case. For
+    2026-10-05 the unit-error account does not disappear - it moves from the
+    largest riser at +$133,750 to a $286 faller. Reporting only "1 account is
+    absent" would hide the larger change, so a mover whose figure shifts by
+    more than the materiality threshold is named too.
+    """
+    if mode != "reported":
+        return
+    reported = q.top_movers(week_start, limit=TOP_MOVERS_N, basis="reported")
+    adjusted = q.top_movers(week_start, limit=TOP_MOVERS_N,
+                            basis="excluding_under_review")
+    if reported.empty:
+        return
+
+    adjusted_by_account = dict(
+        zip(adjusted["ACCOUNT_ID"], adjusted["CHANGE_USD"])
+    )
+    changes: list[str] = []
+    for row in reported.itertuples():
+        before = float(row.CHANGE_USD)
+        if row.ACCOUNT_ID not in adjusted_by_account:
+            changes.append(f"{row.ACCOUNT_ID} ({signed_money(before)} → not in list)")
+            continue
+        after = float(adjusted_by_account[row.ACCOUNT_ID])
+        if abs(before - after) > MATERIAL_ABS_USD:
+            changes.append(
+                f"{row.ACCOUNT_ID} ({signed_money(before)} → {signed_money(after)})"
+            )
+
+    if not changes:
+        return
+
+    md(f"**{plural(len(changes), 'account')} would rank differently on a "
+       f"reported basis** — {', '.join(changes)}. That movement comes from "
+       "account-days under review, not from the business.")
+    if st.button("See these in Data Health", key="movers_to_health"):
+        st.session_state.page = "Data Health"
+        st.session_state.health_week = week_start
+        st.rerun()
+
+
 def _kpi_row(week_start, kpis: dict) -> None:
     c1, c2, c3, c4 = st.columns(4)
+
+    # When a material amount of the week is under review, the week-over-week
+    # and trailing comparisons are arithmetically right but not yet a business
+    # signal: part of what moved is a known data-quality fault. They render
+    # grey rather than green/red, because a coloured arrow asserts a direction
+    # the data does not support until the review clears.
+    ur = q.under_review(week_start)
+    share = (ur["amount"] / kpis["revenue"] * 100) if kpis["revenue"] else 0.0
+    material = ur["amount"] > MATERIAL_ABS_USD or share > MATERIAL_SHARE_PCT
+    caveat = (f"includes {money(ur['amount'])} under review" if material else None)
+
     with c1:
         suffix = (f" ({kpis['days_present']} of {q.DAYS_IN_WEEK} days)"
                   if kpis["is_partial"] else "")
@@ -270,8 +350,10 @@ def _kpi_row(week_start, kpis: dict) -> None:
             pct(kpis["wow_pct"]) if kpis["wow_pct"] is not None else "—",
             delta=(f"from {money(kpis['prior_revenue'])}"
                    if kpis["prior_revenue"] is not None else None),
-            direction=direction_of(kpis["wow_pct"]),
-            help_text=(f"vs {kpis['prior_week']}" if kpis["prior_week"] else withheld),
+            direction="neutral" if material else direction_of(kpis["wow_pct"]),
+            help_text=(caveat if material
+                       else (f"vs {kpis['prior_week']}" if kpis["prior_week"]
+                             else withheld)),
         )
     with c3:
         render_metric_card(
@@ -279,13 +361,22 @@ def _kpi_row(week_start, kpis: dict) -> None:
             pct(kpis["vs_4w_pct"]) if kpis["vs_4w_pct"] is not None else "—",
             delta=(f"avg {money(kpis['trailing_4w'])}"
                    if kpis["trailing_4w"] is not None else None),
-            direction=direction_of(kpis["vs_4w_pct"]),
-            help_text=("Trailing 4 complete weeks, this week excluded"
-                       if kpis["trailing_4w"] is not None else withheld),
+            direction="neutral" if material else direction_of(kpis["vs_4w_pct"]),
+            help_text=(caveat if material
+                       else ("Trailing 4 complete weeks, this week excluded"
+                             if kpis["trailing_4w"] is not None else withheld)),
         )
     with c4:
         render_metric_card("Active accounts", f"{kpis['active_accounts']:,}",
                            help_text="Billed at least once this week")
+
+    if material:
+        md_caption(
+            f"Week-over-week and trailing comparisons are shown in grey: "
+            f"{md_money(ur['amount'])} of this week ({share_pct(share)}) is under "
+            "review, so the direction is not yet a business signal. Switch the "
+            "basis above to see the figure excluding those items."
+        )
 
 
 def _under_review_line(week_start, kpis: dict, mode: str) -> None:
@@ -559,11 +650,37 @@ def _inspector(week_start, alerts: pd.DataFrame, queue: pd.DataFrame) -> None:
     )
     windowed = series if full_year else _recent_window(series, flagged_on)
 
+    # A 1000x unit error flattens the expected band to a line at the bottom of
+    # a linear axis - the band is the whole point of the chart, so log scale is
+    # the default once the flagged value dwarfs the expectation.
+    ratio = _flagged_ratio(windowed, flagged_on)
+    log_default = ratio is not None and ratio > LOG_SCALE_RATIO
+    log_scale = st.checkbox(
+        "Log scale", value=log_default,
+        help=(f"On by default here: the flagged value is {ratio:.0f}x its expected "
+              f"level, which flattens the band on a linear axis."
+              if log_default else
+              "Useful when a spike compresses the expected band out of view."),
+    )
+
     span = (f"full series, {len(series)} days" if full_year
             else f"{INSPECT_WEEKS} weeks to {flagged_on}, {len(windowed)} days")
     md_caption(f"{account_id} · {product} — actual against the expected band "
-               f"(±2σ, asymmetric because the model is multiplicative). {span}.")
-    _series_chart(windowed, flagged_on)
+               f"(±2σ, asymmetric because the model is multiplicative). {span}"
+               + (", log scale." if log_scale else "."))
+    _series_chart(windowed, flagged_on, log_scale)
+
+
+def _flagged_ratio(series: pd.DataFrame, flagged_on) -> float | None:
+    """How many times its expected level the flagged day actually reached."""
+    row = series[pd.to_datetime(series["USAGE_DATE"]) == pd.to_datetime(flagged_on)]
+    if row.empty:
+        return None
+    actual = float(row["VALUE"].iloc[0])
+    expected = float(row["EXPECTED_VALUE"].iloc[0])
+    if expected <= 0:
+        return None
+    return actual / expected
 
 
 def _recent_window(series: pd.DataFrame, flagged_on) -> pd.DataFrame:
@@ -587,25 +704,32 @@ def _recent_window(series: pd.DataFrame, flagged_on) -> pd.DataFrame:
 DAY_AXIS = alt.Axis(format="%b %d", tickCount=8, labelAngle=-45)
 
 
-def _series_chart(df: pd.DataFrame, flagged_on) -> None:
+def _series_chart(df: pd.DataFrame, flagged_on, log_scale: bool = False) -> None:
+    # symlog rather than log: a pipeline gap is a genuine zero and a plain log
+    # scale drops it silently. symlog is linear near zero and logarithmic
+    # beyond, so a gap day still plots.
+    y_scale = alt.Scale(type="symlog") if log_scale else alt.Scale(type="linear")
+    y_axis = alt.Axis(format="$,.0f")
+
     band = (
         alt.Chart(df)
         .mark_area(opacity=0.18)
         .encode(
             x=alt.X("USAGE_DATE:T", title=None, axis=DAY_AXIS),
-            y=alt.Y("BAND_LOW:Q", title="Revenue", axis=alt.Axis(format="$,.0f")),
+            y=alt.Y("BAND_LOW:Q", title="Revenue", axis=y_axis, scale=y_scale),
             y2="BAND_HIGH:Q",
         )
     )
     expected = (
         alt.Chart(df).mark_line(strokeDash=[4, 3])
-        .encode(x=alt.X("USAGE_DATE:T", axis=DAY_AXIS), y="EXPECTED_VALUE:Q")
+        .encode(x=alt.X("USAGE_DATE:T", axis=DAY_AXIS),
+                y=alt.Y("EXPECTED_VALUE:Q", scale=y_scale, axis=y_axis))
     )
     actual = (
         alt.Chart(df).mark_line()
         .encode(
             x=alt.X("USAGE_DATE:T", axis=DAY_AXIS),
-            y="VALUE:Q",
+            y=alt.Y("VALUE:Q", scale=y_scale, axis=y_axis),
             tooltip=[
                 alt.Tooltip("USAGE_DATE:T", title="Date"),
                 alt.Tooltip("VALUE:Q", title="Actual", format="$,.2f"),
@@ -620,7 +744,8 @@ def _series_chart(df: pd.DataFrame, flagged_on) -> None:
     if not marked.empty:
         layers.append(
             alt.Chart(marked).mark_point(size=160, filled=True, color="#dc3545")
-            .encode(x=alt.X("USAGE_DATE:T", axis=DAY_AXIS), y="VALUE:Q")
+            .encode(x=alt.X("USAGE_DATE:T", axis=DAY_AXIS),
+                    y=alt.Y("VALUE:Q", scale=y_scale, axis=y_axis))
         )
     st.altair_chart(alt.layer(*layers).properties(height=320),
                     use_container_width=True)

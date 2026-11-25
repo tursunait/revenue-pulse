@@ -301,19 +301,27 @@ def extract_numbers(text: str) -> list[dict]:
         if suffix and suffix.lower() in SCALE:
             magnitude *= SCALE[suffix.lower()]
 
+        # Claim the nearest unused movement word BEFORE deciding the sign.
+        # A number consumes its governor even when it carries an explicit sign,
+        # because the word is describing that number: in "up +34.6% from
+        # $358,801" the word belongs to the percentage. Skipping consumption
+        # for explicitly-signed numbers let "up" fall through to $358,801 and
+        # assert a sign on the prior week's revenue - harmless with "up", but
+        # with "down" it asserted a negative and failed a correct sentence.
+        governing: int | None = None
+        for pos, direction in reversed(governors):
+            if pos < d_start and pos not in used:
+                governing = direction
+                used.add(pos)
+                break
+
         explicit = m.group("sign")
         if explicit in {"-", "\u2212"}:
             sign: int | None = -1
         elif explicit == "+":
             sign = 1
         else:
-            # Nearest unused movement word before this number governs it.
-            sign = None
-            for pos, direction in reversed(governors):
-                if pos < d_start and pos not in used:
-                    sign = direction
-                    used.add(pos)
-                    break
+            sign = governing
 
         found.append({
             "text": m.group(0).strip(),

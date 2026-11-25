@@ -162,6 +162,15 @@ Rules, in order of importance:
    separates revenue under review from revenue as reported - if a material
    amount is under review, say so and name the issue.
 
+9b. WHEN under_review_is_material IS TRUE you MUST also state which way revenue
+   went EXCLUDING the items under review, using adjusted_direction and
+   adjusted_wow_pct. A reader who only sees the reported headline draws the
+   wrong conclusion, so "reported revenue rose 34.6%, but excluding items under
+   review it rose 1.2%" is the shape required. Note that adjusted_wow_pct
+   compares the adjusted week against the ADJUSTED prior week - both on the
+   same basis. Do not compare the adjusted figure against the reported prior
+   week; that mixes bases and can reverse the apparent direction.
+
 10. Plain language. No preamble, no closing line, no headings. Bullets only."""
 
 
@@ -307,6 +316,23 @@ def build_payload(conn, week_start: date) -> dict:
             })
         return rows
 
+    # Adjusted figures, both weeks on the same basis.
+    adjusted = revenue - float(under["amount"])
+    prior_under_review = float(app_q.under_review(prior_week)["amount"])
+    adjusted_prior = None if prior is None else prior - prior_under_review
+    adjusted_wow = pct(adjusted, adjusted_prior)
+    if adjusted_wow is None:
+        adjusted_direction = None
+    elif adjusted_wow > 0:
+        adjusted_direction = "up"
+    elif adjusted_wow < 0:
+        adjusted_direction = "down"
+    else:
+        adjusted_direction = "flat"
+
+    from claims import is_material           # single definition of materiality
+    material = bool(is_material(float(under["amount"]), revenue))
+
     issues = []
     for r in alerts.itertuples():
         issues.append({
@@ -338,6 +364,20 @@ def build_payload(conn, week_start: date) -> dict:
         "movers_basis": "excluding_under_review",
         "top_movers_up": mover_rows("up"),
         "top_movers_down": mover_rows("down"),
+        # The adjusted comparison is adjusted-vs-ADJUSTED-prior, not
+        # adjusted-vs-reported-prior. The prior week usually has its own items
+        # under review, and comparing a cleaned figure against an uncleaned one
+        # is a basis mismatch - the same error as comparing a partial week with
+        # a full one (DECISIONS.md part 7). For 2026-10-05 the two bases
+        # disagree about the DIRECTION: +1.2% like-for-like against -2.8% on
+        # mismatched bases. Only the honest one is exposed, because exposing
+        # the other invites the mistake.
+        "adjusted_prior_week_revenue": (
+            None if prior is None else round(prior - prior_under_review, 2)
+        ),
+        "adjusted_wow_pct": adjusted_wow,
+        "adjusted_direction": adjusted_direction,
+        "under_review_is_material": material,
         "under_review_usd": round(float(under["amount"]), 2),
         "under_review_account_days": int(under["account_days"]),
         "under_review_issues": under["issues"],

@@ -1,0 +1,33 @@
+definition_version: 2
+entities:
+  streamlit_app:
+    type: streamlit
+    meta:
+      use_mixins:
+        - streamlit_shared
+    identifier:
+      name: CLXBUYC3EO9L4NVA
+      database: REVENUE_PULSE
+      schema: MARTS
+mixins:
+  streamlit_shared:
+    # Every file the app imports has to be listed, or the deploy succeeds and
+    # the app fails at import time. scripts/check_app_artifacts.py verifies
+    # this list against the actual imports.
+    artifacts:
+      - pyproject.toml
+      - streamlit_app.py
+      - queries.py
+      - components.py
+      - verifier.py
+      - claims.py
+    title: REVENUE_PULSE_APP
+    query_warehouse: RP_WH
+    compute_pool: SYSTEM_COMPUTE_POOL_CPU
+    meta:
+      role: RP_ROLE
+    grants:
+      - privilege: USAGE
+        role: RP_ROLE
+        with_grant_option: true
+    main_file: streamlit_app.py

@@ -7,7 +7,8 @@ Three pages: **Weekly Review**, **Data Health**, **AI Summary** (Step 6 stub).
 | `streamlit_app.py` | entry point, navigation, all three pages |
 | `queries.py` | every SQL statement, each cached with `st.cache_data(ttl=900)` |
 | `components.py` | KPI card, status badge, health banner, stylesheet |
-| `environment.yml` | package manifest (stage-based deploy only) |
+| `snowflake.yaml` | Snowflake CLI project definition — identifier, warehouse, role, artifacts |
+| `pyproject.toml` | package manifest read by Streamlit in Snowflake |
 
 No credentials anywhere: the session comes from `get_active_session()`. Imports
 are limited to `streamlit`, `pandas` and `altair`, all in Snowflake's Anaconda
@@ -75,8 +76,8 @@ instead of the detector table; everything else still works.
    - `queries.py` ← paste `app/queries.py`
    - `components.py` ← paste `app/components.py`
 7. Click **Packages** (top of the editor) and add **`altair`**. `streamlit` and
-   `pandas` are already included. `environment.yml` is **not** read by the
-   Snowsight editor — it only applies to the stage-based deploy below.
+   `pandas` are already included. `pyproject.toml` is **not** read by the
+   Snowsight editor — it applies to the CLI deploy below.
 8. Click **Run**.
 
 First load takes a few seconds: `RP_WH` has been suspended for 60s and must
@@ -178,35 +179,97 @@ warehouse is also `RP_WH`. Both of the guardrails this project set up — least
 privilege and the 5-credit cap — are bypassed. Transferring ownership to
 `RP_ROLE` on `RP_WH` puts the app back inside them.
 
-## Alternative: deploy from a stage (scriptable, uses environment.yml)
+## Deploy with the Snowflake CLI (recommended)
 
-Snowsight cannot `PUT` files, so this path needs a client — the Python
-connector can do it, as can SnowSQL or the `snow` CLI.
+`app/snowflake.yaml` and `app/pyproject.toml` define the app, so a deploy is
+one command and the settings are in version control rather than clicked into a
+dialog.
 
-```sql
-USE ROLE RP_ROLE;
-USE WAREHOUSE RP_WH;
-CREATE STAGE IF NOT EXISTS REVENUE_PULSE.MARTS.APP_STAGE
-  DIRECTORY = (ENABLE = TRUE);
+```yaml
+# app/snowflake.yaml
+entities:
+  streamlit_app:
+    type: streamlit
+    identifier:
+      database: REVENUE_PULSE
+      schema: MARTS
+mixins:
+  streamlit_shared:
+    artifacts:          # every file the app imports must be listed
+      - pyproject.toml
+      - streamlit_app.py
+      - queries.py
+      - components.py
+      - verifier.py
+      - claims.py
+    title: REVENUE_PULSE_APP
+    query_warehouse: RP_WH
+    compute_pool: SYSTEM_COMPUTE_POOL_CPU
+    meta:
+      role: RP_ROLE
+    main_file: streamlit_app.py
 ```
 
-```sql
--- from a client that supports PUT
-PUT file://app/streamlit_app.py  @REVENUE_PULSE.MARTS.APP_STAGE/revenue_pulse/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE;
-PUT file://app/queries.py        @REVENUE_PULSE.MARTS.APP_STAGE/revenue_pulse/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE;
-PUT file://app/components.py     @REVENUE_PULSE.MARTS.APP_STAGE/revenue_pulse/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE;
-PUT file://app/environment.yml   @REVENUE_PULSE.MARTS.APP_STAGE/revenue_pulse/ OVERWRITE=TRUE AUTO_COMPRESS=FALSE;
+That is `RP_ROLE` as owner, `REVENUE_PULSE.MARTS` as location and `RP_WH` as
+query warehouse — the same three settings as the Snowsight path, but declared.
+
+### Install and connect
+
+```bash
+pip install snowflake-cli
+snow connection add \
+  --connection-name revenue_pulse \
+  --account "$SNOWFLAKE_ACCOUNT" \
+  --user <your_login> \
+  --role RP_ROLE \
+  --warehouse RP_WH \
+  --database REVENUE_PULSE \
+  --schema MARTS
+snow connection test --connection revenue_pulse
 ```
 
-```sql
-CREATE OR REPLACE STREAMLIT REVENUE_PULSE.MARTS.REVENUE_PULSE_APP
-  ROOT_LOCATION = '@REVENUE_PULSE.MARTS.APP_STAGE/revenue_pulse'
-  MAIN_FILE     = 'streamlit_app.py'
-  QUERY_WAREHOUSE = RP_WH
-  TITLE         = 'Revenue Pulse';
+Use **your own login**, not `RP_SVC`: a `TYPE = SERVICE` user authenticates
+with a key pair and the CLI connection here is the one that creates the app
+object, which sets its owner.
+
+### Deploy
+
+```bash
+cd app
+snow streamlit deploy --replace --connection revenue_pulse
+snow streamlit get-url streamlit_app --connection revenue_pulse
 ```
 
-Redeploying is then a re-`PUT` plus a browser refresh.
+`--replace` updates the existing app in place rather than erroring. Redeploying
+after a code change is the same command.
+
+### The artifacts list is the thing that breaks
+
+`snow streamlit deploy` uploads **only** the files named under `artifacts`. Miss
+one and the deploy succeeds, then the app dies at import time inside Snowflake
+— a failure that cannot happen locally, where every file is simply present.
+The list shipped here originally named only `streamlit_app.py` and a
+`.streamlit/config.toml` that does not exist, while the app imports four more
+modules.
+
+So there is a check:
+
+```bash
+python scripts/check_app_artifacts.py
+```
+
+It parses the imports out of every file in `app/` and asserts each one is
+listed, warns about artifacts that do not exist, and runs in CI on every push.
+
+### Verify what you deployed
+
+```sql
+USE ROLE ACCOUNTADMIN;
+SHOW STREAMLITS IN ACCOUNT;   -- owner = RP_ROLE, query_warehouse = RP_WH
+```
+
+If the owner is not `RP_ROLE`, see the ownership section above — the fix is
+`GRANT OWNERSHIP`, not a redeploy.
 
 ## What the pages show
 

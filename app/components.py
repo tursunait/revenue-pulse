@@ -55,6 +55,10 @@ STYLES = """
 .metric-delta.up   { color: var(--rp-success); }
 .metric-delta.down { color: var(--rp-danger); }
 .metric-delta.flat { color: var(--rp-accent); }
+/* Neutral: the comparison is real but not trustworthy as a business signal,
+   because part of the week is under review. Colouring it green or red would
+   assert a direction the data does not support yet. */
+.metric-delta.neutral { color: var(--rp-gray-mid); font-weight: 500; }
 .metric-help { color: var(--rp-gray-mid); font-size: .78rem; margin-top: .2rem; }
 
 .status-badge {

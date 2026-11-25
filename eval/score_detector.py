@@ -482,7 +482,8 @@ def main() -> int:
                 "refusing to publish a scorecard with duplicate keys "
                 f"({int(dupes_found.sum())} rows):\n{offenders}"
             )
-        card["SCORED_AT"] = pd.Timestamp.utcnow().tz_localize(None)
+        # Timestamp.utcnow() is deprecated in pandas 3.
+        card["SCORED_AT"] = pd.Timestamp.now("UTC").tz_localize(None)
         card["LABELS_IN_SCOPE"] = len(labels_eval)
         card["SUPPORT_ACCOUNT_DAYS"] = len(support)
         write_pandas(

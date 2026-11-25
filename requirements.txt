@@ -1,0 +1,23 @@
+# Pinned to the versions this project was built and verified against.
+# Regenerate deliberately, not automatically: dbt-core is a pre-release here
+# and pandas 3.x removed APIs that earlier code relied on.
+
+# Snowflake access (key-pair auth)
+snowflake-connector-python==5.2.0
+cryptography==50.0.2
+python-dotenv==1.2.4
+
+# Data generation and loading
+pandas==3.1.1
+pyarrow==26.0.1
+
+# Warehouse transformations
+dbt-core==1.13.0b1
+dbt-snowflake==1.12.5
+
+# Streamlit in Snowflake app (also used locally by the checkers)
+streamlit==1.67.0
+altair==6.3.0
+
+# Weekly AI summary
+anthropic==2.14.0

@@ -237,3 +237,8 @@ dbt/logs/
 dbt/dbt_packages/
 
 CLAUDE.md
+# Revenue Pulse: dbt per-user state and generated data.
+# target/, dbt/target/, dbt/logs/, __pycache__/, data/, .env and *.p8 are
+# already covered above; these complete the set.
+dbt/.user.yml
+data/raw/

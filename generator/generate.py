@@ -1,9 +1,22 @@
 """Build the four synthetic RAW tables for Revenue Pulse.
 
-Deterministic: every random draw comes from one np.random.default_rng(SEED)
-with SEED = 42, so repeated runs produce byte-identical values. Only the date
-window shifts, because it ends on the run date by default (override with
-RP_END_DATE=YYYY-MM-DD) so freshness checks downstream have recent data.
+Deterministic, and that now includes the dates.
+
+Every random draw comes from one np.random.default_rng(SEED) with SEED = 42.
+That alone is not enough: the window used to end on "yesterday", so a run on a
+different day produced a different 365-day window, which moved every anomaly
+onto a different account-day and changed every figure in the project. The seed
+was fixed and the data still was not reproducible.
+
+The window end is therefore PINNED to END_DATE. Two runs on any two days now
+produce byte-identical parquet files - verifiable with
+`python generator/generate.py --verify-determinism`.
+
+Keeping the snapshot current is Layer 2's job, not the generator's: an Airflow
+daily load appends a real day rather than re-rolling history. See DECISIONS.md
+part 12.
+
+Override for that work with --end-date or RP_END_DATE=YYYY-MM-DD.
 
 Tables
 ------
@@ -37,6 +50,7 @@ them. Run this first:
 
 from __future__ import annotations
 
+import argparse
 import os
 import sys
 from datetime import date, datetime, time, timedelta, timezone
@@ -51,6 +65,16 @@ OUT_DIR = REPO_ROOT / "data" / "raw"
 SEED = 42
 N_ACCOUNTS = 200
 N_DAYS = 365
+
+#: Last day of the generated window. PINNED, not derived from the clock -
+#: see the module docstring. Every published figure in README.md,
+#: eval/RESULTS.md and DECISIONS.md is computed from this window.
+END_DATE = date(2026, 11, 23)
+
+#: The instant the snapshot is taken: the morning after the last usage day,
+#: when that day's load would have landed. Used to cap loaded_at and to stamp
+#: the labels, so neither depends on when the generator happens to run.
+SNAPSHOT_HOUR = 6
 
 PRODUCTS = ("compute", "storage", "ai_services", "serverless")
 
@@ -152,14 +176,24 @@ def utc_now() -> datetime:
 def window() -> tuple[date, date]:
     """Return (start, end) of the 365-day window, inclusive.
 
-    Ends YESTERDAY, not today. Today's usage has not finished accruing, and a
-    partial final day would make the newest loaded_at land in the future -
-    which silently disables source freshness, since a negative age clears any
-    threshold.
+    Pinned to END_DATE so the dataset is reproducible. Override with
+    --end-date or RP_END_DATE only for Layer 2 work, accepting that a
+    different end date is a different dataset.
     """
     override = os.environ.get("RP_END_DATE")
-    end = date.fromisoformat(override) if override else utc_now().date() - timedelta(days=1)
+    end = date.fromisoformat(override) if override else END_DATE
     return end - timedelta(days=N_DAYS - 1), end
+
+
+def snapshot_instant() -> datetime:
+    """When this snapshot is treated as having been taken.
+
+    Derived from the window, not the clock. Capping loaded_at at the real
+    `now` made the output depend on the run time; capping it here keeps the
+    rule - nothing is loaded in the future - while staying deterministic.
+    """
+    _, end = window()
+    return datetime.combine(end + timedelta(days=1), time(SNAPSHOT_HOUR, 0))
 
 
 def build_accounts(rng: np.random.Generator, start: date, end: date) -> pd.DataFrame:
@@ -217,8 +251,14 @@ def build_accounts(rng: np.random.Generator, start: date, end: date) -> pd.DataF
 
 
 def clamp_to_now(stamps: pd.DatetimeIndex) -> pd.DatetimeIndex:
-    """Cap load timestamps at the current UTC time."""
-    cap = np.datetime64(utc_now(), "ns")
+    """Cap load timestamps at the snapshot instant.
+
+    Capped at the snapshot rather than the wall clock, so the same window
+    always yields the same timestamps. If END_DATE is ever moved into the
+    future the real clock still applies, because a load cannot be recorded
+    before it happened.
+    """
+    cap = np.datetime64(min(snapshot_instant(), utc_now()), "ns")
     return pd.DatetimeIndex(np.minimum(stamps.values.astype("datetime64[ns]"), cap))
 
 
@@ -654,7 +694,9 @@ def inject_anomalies(
     ledger.insert(0, "ledger_id", [f"LED{i + 1:09d}" for i in range(len(ledger))])
 
     labels_df = pd.DataFrame(labels)
-    labels_df["created_at"] = datetime.combine(date.today(), time(0, 0))
+    # Stamped from the snapshot, not the clock: date.today() here changed the
+    # parquet bytes every day and broke reproducibility on its own.
+    labels_df["created_at"] = snapshot_instant()
     return usage, ledger, labels_df
 
 
@@ -708,7 +750,64 @@ def print_summary(tables: dict[str, pd.DataFrame]) -> None:
     print(view.to_string(index=False))
 
 
+def verify_determinism() -> int:
+    """Build the dataset twice and compare the bytes of all four files.
+
+    A seed alone does not make a dataset reproducible - anything read from the
+    clock defeats it. This proves the whole pipeline, not just the RNG.
+    """
+    import hashlib
+    import tempfile
+
+    digests: list[dict[str, str]] = []
+    for run in (1, 2):
+        tables = build_all()
+        run_hashes: dict[str, str] = {}
+        with tempfile.TemporaryDirectory() as tmp:
+            for name, df in tables.items():
+                path = Path(tmp) / f"{name}.parquet"
+                df.to_parquet(path, index=False)
+                run_hashes[name] = hashlib.sha256(path.read_bytes()).hexdigest()
+        digests.append(run_hashes)
+        print(f"  run {run} complete")
+
+    start, end = window()
+    print(f"\nwindow {start} .. {end} (END_DATE pinned)\n")
+    print(f"  {'table':16} {'sha256 (first 16)':20} match")
+    print("  " + "-" * 46)
+    identical = True
+    for name in digests[0]:
+        same = digests[0][name] == digests[1][name]
+        identical &= same
+        print(f"  {name:16} {digests[0][name][:16]:20} {'yes' if same else 'NO'}")
+
+    print()
+    if identical:
+        print("DETERMINISTIC: both runs produced byte-identical parquet files.")
+        return 0
+    print("NOT DETERMINISTIC: something in the build still reads the clock.")
+    return 1
+
+
 def main() -> int:
+    parser = argparse.ArgumentParser(description="Build the synthetic RAW tables.")
+    parser.add_argument(
+        "--end-date",
+        help="Override the pinned END_DATE (YYYY-MM-DD). A different end date "
+             "is a different dataset - for Layer 2 work, not for reproducing "
+             "the published figures.",
+    )
+    parser.add_argument(
+        "--verify-determinism", action="store_true",
+        help="Build twice and compare file hashes instead of writing.",
+    )
+    args = parser.parse_args()
+    if args.end_date:
+        os.environ["RP_END_DATE"] = args.end_date
+
+    if args.verify_determinism:
+        return verify_determinism()
+
     tables = build_all()
     OUT_DIR.mkdir(parents=True, exist_ok=True)
     for name, df in tables.items():

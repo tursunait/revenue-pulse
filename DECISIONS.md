@@ -569,6 +569,35 @@ for. Recomputing alone trusts that every distortion was flagged. The mover list
 answers "what changed in the business"; a data-quality artefact is not business
 movement, and it already has its own section.
 
+### The app and the brief share one movers basis
+
+For a while they did not, and a screenshot made it obvious: the Weekly Review
+page ranked movers on the reported basis while the generated brief used the
+adjusted one, so for 2026-10-05 the dashboard led with ACC00072 at +$133,750
+and ACC00008 at -$13,992 while the brief named ACC00164 and ACC00155. Same
+week, same question, two different answers — and the dashboard's answer was the
+wrong one.
+
+`top_movers` in the app now always passes `basis="excluding_under_review"`,
+**regardless of the Reported / Excluding toggle**. The toggle governs the
+revenue figures, which are a statement about what landed. The movers list
+answers a different question, and the right basis for it does not depend on
+which figure the reader is looking at.
+
+Because the figures above the list can still be on the reported basis, the gap
+is stated rather than left to be noticed. Naming only absences understated it:
+
+| Account | Reported basis | Movers list |
+| --- | --- | --- |
+| ACC00072 | +$133,750 (largest riser) | **-$286** (a minor faller) |
+| ACC00008 | -$13,992 (largest faller) | **not in list** |
+
+The unit-error account does not vanish — it drops from first to negligible,
+which is the more interesting fact. So the line names any mover whose figure
+shifts by more than the materiality threshold as well as any that disappears,
+and links through to Data Health. On a week with nothing under review the line
+does not render at all.
+
 ### Then the claim checks
 
 `app/claims.py` tests four things numbers cannot:
@@ -683,6 +712,82 @@ a rounded figure to the precision it was written to, so nothing is lost.
 The default model moved from `claude-opus-5-5` to **`claude-sonnet-5-5`** on the
 measurement rather than on preference: identical verification pass rate on this
 task, the lowest latency of the three tested, and 39% of Opus's cost.
+
+### A fourth verifier bug: the sign of the wrong number
+
+Spotted in the on-screen table, not by a failing test: `$358,801` showed an
+asserted sign of `+` in "up +34.6% from $358,801", although the rule says a
+movement word governs only the first number after it.
+
+It was a real bug. The code skipped governor *consumption* when a number
+carried an explicit sign, so "up" was never claimed by `+34.6%` and fell
+through to the next unsigned figure. Harmless with "up" — the `+` happened to
+match a positive prior-week revenue — but with "down" it asserted a negative on
+the prior week's revenue and would have failed a correct sentence. A number now
+consumes its governor whether or not it carries an explicit sign.
+
+The lesson is about where the bug was found. Every automated check passed; the
+table on screen was what showed it. Rendering the intermediate state — which
+field each figure matched, and what sign was inferred — is what made a silent
+wrong answer visible.
+
+### Completeness is a correctness property
+
+A brief can be entirely accurate and still mislead by omission. For 2026-10-05,
+"reported revenue up 34.6%" is true and useless when $134,036 of it is a unit
+error.
+
+The aggregates now carry `adjusted_wow_pct`, `adjusted_direction` and
+`under_review_is_material`, and `check_required_content` refuses "Ready to
+send" when a material amount is under review and no bullet states which way
+revenue went excluding it. It matches on substance rather than phrasing: a
+bullet qualifies if it marks the adjusted basis and either states the direction
+in words or quotes the figure.
+
+**And adding it exposed a basis mismatch in the summary that prompted it.** An
+earlier brief said the adjusted figure was "below the prior week rather than up"
+— comparing the *cleaned* current week against the *uncleaned* prior week. The
+prior week had $14,088 under review of its own. On a like-for-like basis the two
+disagree about the direction:
+
+| Comparison | 2026-10-05 |
+| --- | --- |
+| adjusted vs **adjusted** prior ($344,713) | **+1.2% — up** |
+| adjusted vs **reported** prior ($358,801) | −2.8% — down |
+
+This is part 7's lesson on a different axis: comparing two periods measured on
+different bases produces a confident number that points the wrong way. Only the
+like-for-like figure is exposed in the payload, because exposing the other
+invites the mistake, and the prompt says explicitly not to compare the adjusted
+week against the reported prior.
+
+Adding the check did **not** change the model recommendation — with rule 9b in
+the prompt, Opus 5.5, Sonnet 5.5 and Haiku 5.5 all satisfied it 3/3. That is
+the input-side pattern again: the omission was a missing field and a missing
+instruction, not a model that needed replacing.
+
+### Corrections
+
+Things stated earlier in this file or in a generated brief that later turned
+out to be wrong, kept rather than quietly edited away.
+
+**The adjusted-vs-reported basis mismatch.** An earlier brief was praised for
+completeness because it said the adjusted figure was "below the prior week
+rather than above it", where a later one omitted the comparison entirely. The
+omission was real. The statement was also wrong: it compared the *cleaned*
+current week against the *uncleaned* prior week, which had $14,088 under
+review of its own. On a like-for-like basis the week was **+1.2%, up** — the
+opposite direction to what the brief asserted.
+
+It was caught by the rule written to fix the omission, not by review. Adding
+`adjusted_wow_pct` forced a decision about which prior week to compare
+against, and computing it like-for-like produced a number that disagreed in
+sign with the text everyone had already accepted. A requirement to state a
+figure is also a requirement to define it, and defining it is what exposed the
+error.
+
+The payload exposes only the like-for-like comparison. Publishing both would
+let a model pick whichever supports the sentence it has already started.
 
 ### The same lesson, found again in the model comparison
 
