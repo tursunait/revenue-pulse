@@ -184,17 +184,19 @@ row was dated three hours in the **future**. The computed age was -3 hours,
 which clears any threshold — the check passed, and would have passed against a
 completely stalled pipeline.
 
-Fixed in the generator: usage now ends **yesterday** (UTC), and `loaded_at` is
-clamped to no later than `now`. Freshness is configured `warn_after: 36h`,
-`error_after: 72h`, and passes on a fresh load with an age of a few hours.
+Fixed in the generator: usage ends a full day before the snapshot instant, and
+`loaded_at` is clamped so nothing is recorded as loaded in the future.
+Freshness is configured `warn_after: 36h`, `error_after: 72h`.
 
-**Expect it to warn as the snapshot ages.** This is a static dataset: nothing
-reloads it, so 36 hours after a `generator/load.py` run the freshness check
-starts warning, and after 72 hours it errors. That is the check working, not a
-regression — re-run the generator and loader to reset it. It stops being a
-nuisance in Layer 2, when the Airflow daily run keeps `RAW` current and
-freshness becomes a genuine signal about the pipeline rather than about how
-long ago the snapshot was built.
+The first version of this fix ended the window on **yesterday**, which solved
+the future-timestamp problem and created a worse one — see part 12. The window
+is now pinned, so freshness measures the age of a fixed snapshot.
+
+**Expect it to warn, and read the warning correctly.** The snapshot is dated
+2026-11-23, so the freshness check reports exactly what it should: this data is
+old. That is the check working. It becomes a signal about the *pipeline* rather
+than about the snapshot only in Layer 2, when an Airflow daily load keeps `RAW`
+genuinely current.
 
 ### Note on reconciliation sign convention
 
@@ -811,6 +813,83 @@ be the fourth checker bug above, not model errors.
 what it was given before reaching for a sterner instruction. Three separate
 failures here — a misleading mover, a missing annotation, an absent delta —
 were all cheaper to fix in the payload than to police in the prose.
+
+---
+
+## 12. A seed is not reproducibility
+
+**The bug.** `generate.py` carried `seed=42` and a module docstring promising
+"repeated runs produce byte-identical values". It did not. The window ended on
+*yesterday*:
+
+```python
+end = utc_now().date() - timedelta(days=1)     # the bug
+```
+
+So every day the 365-day window slid forward, the synthetic series was built
+over different dates, and every planted anomaly landed on a different
+account-day. The seed fixed the random *draws*; the dates those draws were
+applied to moved.
+
+**How it surfaced.** Screenshots taken two days apart disagreed with the
+repository. Week 2026-10-05 went from $482,973 with $134,036 under review to
+$348,052 and "All clear" — the same week, the same code, the same seed. Every
+published figure moved with it: 2026-11-16 revenue $371,924 → $370,896,
+scenario B precision at \|z\|>5 from 20/24 to 11/14.
+
+Nothing failed. `dbt build` passed, the checkers passed, the summaries
+verified. The data was internally consistent on any given day and inconsistent
+with every document describing it.
+
+**The call.** Pin the window:
+
+```python
+END_DATE = date(2026, 11, 23)       # not derived from the clock
+```
+
+Overridable with `--end-date` or `RP_END_DATE` for Layer 2 work, with the
+docstring stating plainly that a different end date is a different dataset.
+
+Two further clock reads had to go with it, and finding them is the point —
+pinning the obvious one would have left the output still varying:
+
+| Read from the clock | Effect | Now |
+| --- | --- | --- |
+| window end | whole dataset shifts daily | pinned `END_DATE` |
+| `loaded_at` clamped to `now` | load timestamps differ per run | clamped to the snapshot instant |
+| `created_at` on the labels | parquet bytes differ daily | stamped from the snapshot |
+
+**Proven, not asserted.** `python generator/generate.py --verify-determinism`
+builds the dataset twice and compares SHA-256 of all four parquet files. The
+claim in the docstring is now a command anyone can run:
+
+```
+ACCOUNTS         80c0ceb4ca7fc0fd     yes
+USAGE_EVENTS     7cc7fa3b752319af     yes
+LEDGER_REVENUE   3fd8542a41a17890     yes
+ANOMALY_LABELS   e8594664b5d9f053     yes
+DETERMINISTIC: both runs produced byte-identical parquet files.
+```
+
+After re-pinning, every figure quoted across README.md, DECISIONS.md and
+app/README.md was re-checked against the warehouse — 21 of 21 matched, because
+the pinned window is the one they were written from.
+
+### Freshness is Layer 2's job, not the generator's
+
+The window originally chased "yesterday" for a defensible reason: so source
+freshness would pass instead of warning on stale data. That was solving the
+right problem in the wrong layer.
+
+A generator's job is to produce a **fixed, citable dataset**. Keeping data
+current is an *ingestion* concern, and in Layer 2 it is an Airflow daily load
+appending one real day — which exercises freshness honestly, because a late or
+missing run then means a late or missing run.
+
+Conflating the two cost reproducibility to buy a green check mark on a
+synthetic snapshot. The check now warns, correctly, that a snapshot dated
+2026-11-23 is old. A warning that is true is worth more than a pass that was
+arranged.
 
 ---
 
